@@ -380,7 +380,7 @@ Please provide a comprehensive answer based on the context above."""
                 "chunk_size": self.chunk_size,
                 "chunk_overlap": self.chunk_overlap,
                 "top_k": self.top_k,
-                "similarity_threshold": self.similarity_threshold,
+                "distance_threshold": self.distance_threshold,
                 "embedding_service_initialized": bool(self.embedding_service),
                 "llm_client_initialized": bool(self.llm_client),
                 "text_splitter_initialized": bool(self.text_splitter),
