@@ -1,13 +1,7 @@
-from fastapi import APIRouter, HTTPException, Depends
-from typing import Dict, Any, Optional
-from datetime import datetime
-
+from fastapi import APIRouter, HTTPException
 from ..services.simple_chat_service import SimpleChatService
 from ..core.logger import api_logger
 router = APIRouter(prefix="/health", tags=["health"])
-
-# Global service instance (simple for MVP)
-_chat_service: Optional[SimpleChatService] = None
 
 
 async def get_chat_service() -> SimpleChatService:

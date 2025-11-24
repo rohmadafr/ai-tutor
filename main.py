@@ -14,6 +14,7 @@ from app.core.logger import app_logger
 from app.api.health import router as health_router
 from app.api.simple_chat import router as simple_chat_router
 from app.api.websocket_chat import router as websocket_router
+from app.api.documents import router as documents_router
 from app.core.exceptions import TutorServiceException
 from app.services.simple_chat_service import SimpleChatService
 
@@ -37,6 +38,8 @@ async def lifespan(app: FastAPI):
         app_logger.info("Health check at http://%s:%s/health", settings.api_host, settings.api_port)
         app_logger.info("Legacy chat API at http://%s:%s/chat/completion", settings.api_host, settings.api_port)
         app_logger.info("LCEL chat API at http://%s:%s/chat/completion-lcel", settings.api_host, settings.api_port)
+        app_logger.info("Document upload API at http://%s:%s/documents/upload", settings.api_host, settings.api_port)
+        app_logger.info("Document search API at http://%s:%s/documents/search", settings.api_host, settings.api_port)
         app_logger.info("WebSocket streaming at ws://%s:%s/ws/chat-lcel", settings.api_host, settings.api_port)
         app_logger.info("WebSocket status at http://%s:%s/ws/status", settings.api_host, settings.api_port)
         app_logger.info("API docs at http://%s:%s/docs", settings.api_host, settings.api_port)
@@ -74,6 +77,7 @@ app.add_middleware(
 # Include routers
 app.include_router(simple_chat_router)
 app.include_router(websocket_router)
+app.include_router(documents_router)
 app.include_router(health_router)
 
 
@@ -115,47 +119,6 @@ async def general_exception_handler(request, exc: Exception):
             "message": "An unexpected error occurred"
         }
     )
-
-
-@app.get("/")
-async def root():
-    """Root endpoint with API information."""
-    return {
-        "service": "Tutor Services API",
-        "version": "1.0.0",
-        "status": "healthy",
-        "description": "RAG Chatbot with Semantic Caching",
-        "endpoints": {
-            "legacy_chat": "/chat/completion",
-            "lcel_chat": "/chat/completion-lcel",
-            "websocket": "/ws/chat-lcel",
-            "websocket_status": "/ws/status",
-            "health": "/chat/health",
-            "docs": "/docs",
-            "redoc": "/redoc"
-        },
-        "features": [
-            "Legacy RAG + Semantic Cache (RedisVL)",
-            "LCEL Pattern with Hybrid Threshold Logic",
-            "WebSocket Streaming (Real-time)",
-            "Bidirectional Communication",
-            "User Personalization",
-            "Analytics and monitoring"
-        ],
-        "architecture": {
-            "legacy": {
-                "chat_service": "SimpleChatService.chat()",
-                "rag_service": "UnifiedRAGService.query()",
-                "cache_service": "CustomCacheService.query()"
-            },
-            "lcel": {
-                "chat_service": "SimpleChatService.chat_lcel()",
-                "rag_service": "LCELRAGService.query()",
-                "streaming": "WebSocket + LangChain Expression Language"
-            }
-        }
-    }
-
 
 # Development server configuration
 if __name__ == "__main__":

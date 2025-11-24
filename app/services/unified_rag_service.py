@@ -1,6 +1,7 @@
 """
 Unified RAG Service with integrated Vector Store
 Single service for RAG + Vector Operations - no external dependencies
+Based on efficient batch processing pattern from ai-services
 """
 import os
 import time
@@ -26,6 +27,8 @@ except ImportError:
 from ..config.settings import settings
 from ..core.logger import rag_logger
 from ..core.exceptions import RedisException
+from ..core.telemetry import TokenCounter
+from ..utils.batch_processor import batch_processor
 
 
 class UnifiedRAGService:
@@ -61,6 +64,10 @@ class UnifiedRAGService:
         self.vector_dimension = settings.vector_dimension or 1536
         self.connected = False
 
+        # Batch processing components
+        self.token_counter = TokenCounter()
+        rag_logger.info("Batch processor initialized with token counter")
+
         # Create prompt template
         self.prompt = ChatPromptTemplate.from_template("""
         Anda adalah AI Tutor Assistant yang membantu menjawab pertanyaan user pada sebuah Learning Management System
@@ -92,10 +99,11 @@ class UnifiedRAGService:
                 # Filterable metadata (Tag)
                 {"name": "material_id", "type": "tag"},
                 {"name": "course_id", "type": "tag"},
+                {"name": "page", "type": "tag"},
 
                 # Content (Text)
                 {"name": "text", "type": "text"},
-                {"name": "source_file", "type": "text"},
+                {"name": "filename", "type": "text"},
 
                 # Vector (HNSW)
                 {
@@ -176,39 +184,83 @@ class UnifiedRAGService:
             await self.connect()
 
     async def add_documents(self, documents: List[Dict[str, Any]]) -> List[str]:
-        """Add documents to knowledge base (integrated vector store)"""
+        """Add documents to knowledge base with efficient batch processing"""
         try:
             await self._ensure_connection()
 
-            data_to_load = []
-
+            # Convert to LangChain Document format
+            langchain_docs = []
             for i, doc in enumerate(documents):
                 content = doc.get("content", "")
                 metadata = doc.get("metadata", {})
 
-                # Generate embedding for this document
-                embedding = await self.embeddings.aembed_query(content)
+                # Preserve all metadata from the document, especially page numbers
+                langchain_doc = Document(
+                    page_content=content,
+                    metadata={
+                        "material_id": str(metadata.get("material_id", f"doc_{i}")),
+                        "course_id": str(metadata.get("course_id", "default")),
+                        "filename": str(metadata.get("filename", "unknown")),
+                        "page": str(metadata.get("page", 0)),  # Preserve original page number
+                        "source": metadata.get("source", ""),  # Preserve source if available
+                        "preprocessed": metadata.get("preprocessed", False),
+                        "original_length": metadata.get("original_length", 0),
+                        "processed_length": metadata.get("processed_length", 0),
+                        **{k: v for k, v in metadata.items() if k not in ["material_id", "course_id", "filename", "page", "source", "preprocessed", "original_length", "processed_length"]}
+                    }
+                )
+                langchain_docs.append(langchain_doc)
 
-                # Use RedisVL native format - let RedisVL handle vector conversion
-                data = {
-                    "text": content,
-                    "vector": embedding,  # RedisVL handles conversion automatically
-                    "material_id": str(metadata.get("material_id", f"doc_{i}")),
-                    "course_id": str(metadata.get("course_id", "default")),
-                    "source_file": str(metadata.get("source_file", "unknown"))
-                }
+            # Count total tokens to check if we need batching
+            total_tokens = self.token_counter.count_documents_tokens(langchain_docs)
 
-                data_to_load.append(data)
+            rag_logger.info(f"Adding {len(langchain_docs)} documents with {total_tokens} tokens to vector store")
 
-            # Store in knowledge base using RedisVL load method
-            await self.index.load(data_to_load)
+            if total_tokens <= 250000:
+                # Single batch processing
+                await self._process_documents_batch(langchain_docs)
+            else:
+                # Multi-batch processing
+                rag_logger.info(f"Using batch processing for {total_tokens} tokens")
+                batches = batch_processor.split_into_batches(langchain_docs)
+                rag_logger.info(f"Split into {len(batches)} batches for embedding generation")
 
-            rag_logger.info(f"Added {len(documents)} documents to knowledge base")
-            return [f"doc_{i}" for i in range(len(documents))]
+                total_processed = 0
+                for i, batch in enumerate(batches, 1):
+                    rag_logger.info(f"Processing batch {i}/{len(batches)} with {len(batch)} documents")
+                    await self._process_documents_batch(batch)
+                    total_processed += len(batch)
+
+                rag_logger.info(f"✓ Berhasil memuat {total_processed} chunks ke Redis dalam {len(batches)} batch.")
+
+            return []  # No document IDs needed for upload endpoint
 
         except Exception as e:
             rag_logger.error(f"Failed to add documents: {e}")
             raise RedisException(f"Document storage failed: {str(e)}")
+
+    async def _process_documents_batch(self, documents: List[Document]):
+        """Process a single batch of documents for embedding and storage."""
+        texts = [doc.page_content for doc in documents]
+        vectors = await self.embeddings.aembed_documents(texts)
+
+        data_to_load = []
+        for i, (doc, vec) in enumerate(zip(documents, vectors)):
+            material_id = doc.metadata.get("material_id", "unknown")
+
+            data = {
+                "text": doc.page_content,
+                "vector": np.array(vec, dtype=np.float32).tobytes(),  # Convert to bytes
+                "material_id": material_id,
+                "course_id": str(doc.metadata.get("course_id", "default")),
+                "filename": str(doc.metadata.get("filename", "unknown")),
+                "page": str(doc.metadata.get("page", 0))  # Use actual page number from metadata
+            }
+
+            data_to_load.append(data)
+
+        await self.index.load(data_to_load)
+        rag_logger.info(f"✓ Berhasil memuat {len(data_to_load)} chunks ke Redis.")
 
     async def query(self, question: str, course_id: Optional[str] = None) -> Dict[str, Any]:
         """Query the RAG system (integrated vector store)"""
@@ -230,7 +282,7 @@ class UnifiedRAGService:
                 metadata = {
                     "material_id": result.get("material_id", ""),
                     "course_id": result.get("course_id", ""),
-                    "source_file": result.get("source_file", ""),
+                    "filename": result.get("filename", ""),
                     "score": result.get("score", 0.0)
                 }
 
@@ -320,7 +372,7 @@ class UnifiedRAGService:
             vector_query = VectorQuery(
                 vector=query_vector,
                 vector_field_name="vector",
-                return_fields=["text", "material_id", "course_id", "source_file"],
+                return_fields=["text", "material_id", "course_id", "filename", "page"],
                 num_results=top_k,
                 return_score=True
             )
@@ -357,7 +409,8 @@ class UnifiedRAGService:
                     "text": getattr(doc, "text", ""),
                     "material_id": getattr(doc, "material_id", ""),
                     "course_id": getattr(doc, "course_id", ""),
-                    "source_file": getattr(doc, "source_file", ""),
+                    "filename": getattr(doc, "filename", ""),
+                    "page": getattr(doc, "page", ""),
                     "score": 1.0 - distance,  # Convert distance to similarity score
                     "vector_distance": distance
                 })
@@ -413,6 +466,154 @@ class UnifiedRAGService:
             rag_logger.error(f"Failed to get stats: {e}")
             return {"error": str(e)}
 
+    async def get_documents_by_course_id(self, course_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get all documents for a specific course_id"""
+        try:
+            await self._ensure_connection()
+
+            filter_expr = Tag("course_id") == course_id
+
+            filter_query = FilterQuery(
+                return_fields=["text", "material_id", "course_id", "filename", "page"],
+                filter_expression=filter_expr,
+                num_results=limit
+            )
+
+            # Execute search
+            result = await self.index.search(filter_query.query, query_params=filter_query.params)
+
+            documents = []
+            for doc in result.docs:
+                documents.append({
+                    "text": getattr(doc, "text", ""),
+                    "material_id": getattr(doc, "material_id", ""),
+                    "course_id": getattr(doc, "course_id", ""),
+                    "filename": getattr(doc, "filename", ""),
+                    "page": getattr(doc, "page", "")
+                })
+
+            rag_logger.info(f"Retrieved {len(documents)} documents for course_id: {course_id}")
+            return documents
+
+        except Exception as e:
+            rag_logger.error(f"Failed to get documents by course_id {course_id}: {e}")
+            return []
+
+    async def get_documents_by_material_id(self, material_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get all documents for a specific material_id"""
+        try:
+            await self._ensure_connection()
+
+            filter_expr = Tag("material_id") == material_id
+
+            filter_query = FilterQuery(
+                return_fields=["text", "material_id", "course_id", "filename", "page"],
+                filter_expression=filter_expr,
+                num_results=limit
+            )
+
+            # Execute search
+            result = await self.index.search(filter_query.query, query_params=filter_query.params)
+
+            documents = []
+            for doc in result.docs:
+                documents.append({
+                    "text": getattr(doc, "text", ""),
+                    "material_id": getattr(doc, "material_id", ""),
+                    "course_id": getattr(doc, "course_id", ""),
+                    "filename": getattr(doc, "filename", ""),
+            "page": getattr(doc, "page", "")
+                })
+
+            rag_logger.info(f"Retrieved {len(documents)} documents for material_id: {material_id}")
+            return documents
+
+        except Exception as e:
+            rag_logger.error(f"Failed to get documents by material_id {material_id}: {e}")
+            return []
+
+    async def delete_documents_by_course_id(self, course_id: str) -> int:
+        """Delete all documents for a specific course_id using RedisVL search, returns count of deleted documents"""
+        try:
+            await self._ensure_connection()
+
+            filter_expr = Tag("course_id") == course_id
+
+            filter_query = FilterQuery(
+                return_fields=["__id"],  # Only get document IDs
+                filter_expression=filter_expr,
+                num_results=10000  # Large limit to get all
+            )
+
+            # Execute search to get document IDs
+            result = await self.index.search(filter_query.query, query_params=filter_query.params)
+
+            if not result.docs:
+                return 0
+
+            # Extract document keys (IDs)
+            keys_to_delete = [getattr(doc, "id", None) for doc in result.docs]
+            keys_to_delete = [key for key in keys_to_delete if key]  # Remove None values
+
+            if not keys_to_delete:
+                return 0
+
+            # Delete using pipeline for better performance
+            pipeline = self.client.pipeline()
+            for key in keys_to_delete:
+                pipeline.delete(key)
+
+            pipeline_results = await pipeline.execute()
+            deleted_count = sum(pipeline_results)  # Sum all successful deletions
+
+            rag_logger.info(f"Deleted {deleted_count} document chunks for course_id: {course_id}")
+            return deleted_count
+
+        except Exception as e:
+            rag_logger.error(f"Failed to delete documents by course_id {course_id}: {e}")
+            raise RedisException(f"Delete operation failed: {str(e)}")
+
+    async def delete_documents_by_material_id(self, material_id: str) -> int:
+        """Delete all documents for a specific material_id using RedisVL search, returns count of deleted documents"""
+        try:
+            await self._ensure_connection()
+
+            filter_expr = Tag("material_id") == material_id
+
+            filter_query = FilterQuery(
+                return_fields=["__id"],  # Only get document IDs
+                filter_expression=filter_expr,
+                num_results=10000  # Large limit to get all
+            )
+
+            # Execute search to get document IDs
+            result = await self.index.search(filter_query.query, query_params=filter_query.params)
+
+            if not result.docs:
+                return 0
+
+            # Extract document keys (IDs)
+            keys_to_delete = [getattr(doc, "id", None) for doc in result.docs]
+            keys_to_delete = [key for key in keys_to_delete if key]  # Remove None values
+
+            if not keys_to_delete:
+                return 0
+
+            # Delete using pipeline for better performance
+            pipeline = self.client.pipeline()
+            for key in keys_to_delete:
+                pipeline.delete(key)
+
+            pipeline_results = await pipeline.execute()
+            deleted_count = sum(pipeline_results)  # Sum all successful deletions
+
+            rag_logger.info(f"Deleted {deleted_count} document chunks for material_id: {material_id}")
+            return deleted_count
+
+        except Exception as e:
+            rag_logger.error(f"Failed to delete documents by material_id {material_id}: {e}")
+            raise RedisException(f"Delete operation failed: {str(e)}")
+
     async def disconnect(self) -> None:
         """Disconnect from Redis"""
         try:
@@ -434,8 +635,6 @@ unified_rag_service = UnifiedRAGService()
 # =================================================================
 # LangChain Expression Language pattern with hybrid threshold logic
 # =================================================================
-
-
 
 def should_use_context(docs: List[Document], threshold: float = None) -> bool:
     """
@@ -499,16 +698,21 @@ class LCELRAGService:
         self.rag_service = rag_service or unified_rag_service
         self.rag_threshold = settings.rag_distance_threshold  # Use settings threshold
 
-        # RAG prompt template
+        # Create prompt template
         self.rag_prompt = ChatPromptTemplate.from_template("""
-        Anda adalah AI Tutor Assistant. Jawab berdasarkan konteks yang diberikan.
+        Anda adalah AI Tutor Assistant yang membantu menjawab pertanyaan user pada sebuah Learning Management System
+        berdasarkan konteks atau knowledge base pada course yang diberikan.
 
         Konteks:
         {context}
 
         Pertanyaan: {question}
 
-        Jawaban:
+        Jawab pertanyaan berdasarkan konteks yang diberikan. Jika konteks tidak mengandung
+        informasi yang cukup untuk menjawab pertanyaan, katakan "Saya tidak memiliki informasi
+        yang cukup untuk menjawab pertanyaan ini."
+
+        Jawab dalam bahasa yang sama dengan pertanyaan.
         """)
 
         # Output parser
@@ -541,7 +745,7 @@ class LCELRAGService:
                 metadata = {
                     "material_id": result.get("material_id", ""),
                     "course_id": result.get("course_id", ""),
-                    "source_file": result.get("source_file", ""),
+                    "filename": result.get("filename", ""),
                     "score": result.get("score", 0.0),
                     "vector_distance": result.get("vector_distance", 1.0)
                 }

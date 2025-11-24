@@ -10,8 +10,10 @@ fields:
     type: tag
   - name: text
     type: text
-  - name: source_file
+  - name: filename
     type: text
+  - name: page
+    type: tag
   - name: vector
     type: vector
     attrs:

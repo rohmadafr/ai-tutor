@@ -55,3 +55,5 @@ class FileHasher:
         except Exception as e:
             app_logger.error(f"Error generating content signature for {file_path}: {e}")
             return f"fallback_{hash(f'{file_path}_{time.time()}')}"
+
+    

@@ -116,54 +116,6 @@ async def chat_completion(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/add-documents")
-async def add_documents(
-    documents: list,
-    course_id: Optional[str] = None
-) -> Dict[str, Any]:
-    """Add documents to the RAG knowledge base"""
-    try:
-        rag_service = await get_rag_service()
-        doc_ids = await rag_service.add_documents(documents)
-
-        api_logger.info(f"Added {len(documents)} documents to knowledge base")
-
-        return {
-            "message": f"Successfully added {len(documents)} documents",
-            "document_ids": doc_ids,
-            "course_id": course_id,
-            "total_documents": len(documents)
-        }
-
-    except Exception as e:
-        api_logger.error(f"Failed to add documents: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/search")
-async def search_knowledge_base(
-    query: str,
-    course_id: Optional[str] = None,
-    k: int = 5
-) -> Dict[str, Any]:
-    """Search knowledge base without generating response"""
-    try:
-        if not query or not query.strip():
-            raise HTTPException(status_code=400, detail="Query cannot be empty")
-
-        rag_service = await get_rag_service()
-        results = await rag_service.search_similar(query, course_id, k)
-
-        return {
-            "query": query,
-            "course_id": course_id,
-            "results": results,
-            "total_results": len(results)
-        }
-
-    except Exception as e:
-        api_logger.error(f"Knowledge base search failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/cache")
