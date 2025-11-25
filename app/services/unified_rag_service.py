@@ -13,7 +13,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
-from langchain_community.callbacks import get_openai_callback
 
 # RedisVL imports
 try:
@@ -348,23 +347,26 @@ class UnifiedRAGService:
             cost_usd = 0.0
 
             if context.strip():
-                # Use RAG prompt with callback for token tracking
+                #Use RAG prompt with direct usage_metadata extraction
                 prompt_messages = self.prompt.format_messages(
                     context=context,
                     question=question
                 )
 
-                with get_openai_callback() as cb:
-                    llm_response = await self.llm.ainvoke(prompt_messages)
-                    answer = llm_response.content
+                llm_response = await self.llm.ainvoke(prompt_messages)
+                answer = llm_response.content
 
-                    # Extract token usage from callback
-                    input_tokens = cb.prompt_tokens
-                    output_tokens = cb.completion_tokens
-                    total_tokens = cb.total_tokens
-                    cost_usd = cb.total_cost
+                # Extract token usage from AIMessage usage_metadata
+                usage = self._extract_usage_metadata(llm_response)
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
 
-                    rag_logger.info(f"UnifiedRAGService.query tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
+                # Calculate cost using TokenCounter
+                model_name = settings.openai_model_comprehensive
+                cost_usd = self.token_counter.calculate_cost(input_tokens, output_tokens, model_name)
+
+                rag_logger.info(f"UnifiedRAGService.query tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
             else:
                 # No context found
                 answer = "Saya tidak memiliki informasi yang cukup untuk menjawab pertanyaan ini."
@@ -979,13 +981,12 @@ class RAGService():
         self.rag_service = UnifiedRAGService()
 
         # Import components
-        from ..core.llm_client import LLMClient
         from ..core.telemetry import TokenCounter
         from ..core.database import get_db_session
 
-        self.llm_client = LLMClient(TokenCounter())
         self.db_session = get_db_session
         self.rag_logger = rag_logger
+        self.token_counter = TokenCounter()
 
         # Initialize LangChain components
         self._setup_lcel_components()
@@ -1078,15 +1079,30 @@ class RAGService():
             output_tokens = 0
             cost_usd = 0.0
 
-            with get_openai_callback() as cb:
-                response_text = await rag_chain.ainvoke(question)
+            chain_without_parser = (
+                RunnableParallel({
+                    "knowledge_base": lambda _: rag_result.get("context", ""),
+                    "user_context": lambda _: user_context_text,
+                    "history": lambda _: history_text,
+                    "question": RunnablePassthrough()
+                })
+                | self.rag_prompt
+                | chat_openai
+            )
 
-                # Extract token usage from callback
-                input_tokens = cb.prompt_tokens
-                output_tokens = cb.completion_tokens
-                cost_usd = cb.total_cost
+            llm_response = await chain_without_parser.ainvoke(question)
+            response_text = llm_response.content
 
-                rag_logger.info(f"RAGService.generate_response tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
+            # Extract token usage from AIMessage usage_metadata
+            usage = self.rag_service._extract_usage_metadata(llm_response)
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+
+            # Calculate cost using TokenCounter
+            model_name = settings.openai_model_comprehensive
+            cost_usd = self.token_counter.calculate_cost(input_tokens, output_tokens, model_name)
+
+            rag_logger.info(f"RAGService.generate_response tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
 
             # Step 4: Handle personalization if needed
             final_response = response_text
@@ -1167,9 +1183,9 @@ class RAGService():
         history: str,
         original_query: str
     ):
-        """Streaming version of response personalization using GPT-4o-nano"""
+        """Streaming version of response personalization using GPT-4.1-nano"""
         try:
-            # Use GPT-4o-nano specifically for personalization
+            # Use GPT-4.1-nano specifically for personalization
             from langchain_openai import ChatOpenAI
             personalization_llm = ChatOpenAI(
                 model=settings.openai_model_personalized,
@@ -1178,7 +1194,7 @@ class RAGService():
                 openai_api_key=settings.openai_api_key
             )
 
-            # Build personalization streaming chain
+            # Build personalization chain without output parser to get AIMessage
             personalization_chain = (
                 RunnableParallel({
                     "base_response": lambda _: base_response,
@@ -1188,17 +1204,34 @@ class RAGService():
                 })
                 | self.personalization_prompt
                 | personalization_llm
-                | self.output_parser
             )
 
-            # Stream personalized response with token tracking
-            with get_openai_callback() as cb:
-                async for chunk in personalization_chain.astream({}):
-                    if chunk:
-                        yield chunk
+            # Stream personalized response and yield chunks
+            personalized_response = ""
+            full_chunk = None
+            async for chunk in personalization_chain.astream({}):
+                if chunk:
+                    if full_chunk is None:
+                        full_chunk = chunk
+                    else:
+                        full_chunk += chunk
 
-                # Log token usage after streaming completes
-                rag_logger.info(f"RAGService._personalize_response_stream tokens: input={cb.prompt_tokens}, output={cb.completion_tokens}, cost=${cb.total_cost:.6f}")
+                    # Yield content chunks for streaming
+                    if hasattr(chunk, 'content') and chunk.content:
+                        personalized_response += chunk.content
+                        yield chunk.content
+
+            # Log token usage from final accumulated chunk
+            if full_chunk:
+                usage = self.rag_service._extract_usage_metadata(full_chunk)
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                cost_usd = self.token_counter.calculate_cost(
+                    input_tokens,
+                    output_tokens,
+                    settings.openai_model_personalized,
+                )
+                rag_logger.info(f"RAGService._personalize_response_stream tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
 
         except Exception as e:
             self.rag_logger.error(f"Streaming personalization failed: {e}")
@@ -1214,15 +1247,16 @@ class RAGService():
     ) -> Dict[str, Any]:
         """Personalize response using personalization model (gpt-4.1-nano)"""
         try:
-            # Use personalization model specifically (gpt-4.1-nano from settings)
+           # Use personalization model specifically with stream_usage=True
             from langchain_openai import ChatOpenAI
             personalization_llm = ChatOpenAI(
                 model=settings.openai_model_personalized,
                 temperature=settings.openai_temperature,
+                streaming=False,
                 openai_api_key=settings.openai_api_key
             )
 
-            # Build personalization chain
+            # Build personalization streaming chain
             personalization_chain = (
                 RunnableParallel({
                     "base_response": lambda _: base_response,
@@ -1232,22 +1266,29 @@ class RAGService():
                 })
                 | self.personalization_prompt
                 | personalization_llm
-                | self.output_parser
             )
 
-            # Generate personalized response with token tracking
-            with get_openai_callback() as cb:
-                personalized_response = await personalization_chain.ainvoke({})
+            # Gunakan ainvoke sederhana:
+            llm_response = await personalization_chain.ainvoke({})
+            personalized_response = llm_response.content
 
-                # Extract token usage from callback
+            # Extract token usage from final accumulated chunk
+            tokens = {"input": 0, "output": 0}
+            if full_chunk:
+                usage = self.rag_service._extract_usage_metadata(full_chunk)
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                cost_usd = self.token_counter.calculate_cost(
+                    input_tokens,
+                    output_tokens,
+                    settings.openai_model_personalized,
+                )
                 tokens = {
-                    "input": cb.prompt_tokens,
-                    "output": cb.completion_tokens,
-                    "total": cb.total_tokens,
-                    "cost": cb.total_cost
+                    "input": input_tokens,
+                    "output": output_tokens,
+                    "cost": cost_usd
                 }
-
-                rag_logger.info(f"RAGService._personalize_response tokens: input={tokens['input']}, output={tokens['output']}, cost=${tokens['cost']:.6f}")
+                rag_logger.info(f"RAGService._personalize_response tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
 
             return {
                 "response": personalized_response,
@@ -1259,7 +1300,8 @@ class RAGService():
             self.rag_logger.error(f"Personalization failed: {e}")
             return {
                 "response": base_response,  # Fallback
-                "model_used": settings.openai_model_comprehensive
+                "model_used": settings.openai_model_comprehensive,
+                "tokens": {"input": 0, "output": 0, "cost": 0.0}
             }
 
     async def store_in_database(
@@ -1298,7 +1340,7 @@ class RAGService():
             self.rag_logger.error(f"Failed to store in database: {e}")
             return False
 
-    async def stream(
+    async def generate_response_stream(
         self,
         question: str,
         course_id: Optional[str] = None,
@@ -1314,13 +1356,14 @@ class RAGService():
             # Step 1: Get context components
             rag_result = await self._get_knowledge_base_context(question, course_id)
 
-            # Step 2: Build RAG streaming chain with LangChain ChatOpenAI
+            # Step 2: Build RAG streaming chain with LangChain ChatOpenAI (stream_usage=True)
             from langchain_openai import ChatOpenAI
             chat_openai = ChatOpenAI(
                 model=settings.openai_model_comprehensive,
                 temperature=settings.openai_temperature,
                 api_key=settings.openai_api_key,
-                streaming=True
+                streaming=True,
+                stream_usage=True  # Enable usage metadata in streaming
             )
 
             rag_streaming_chain = (
@@ -1330,19 +1373,34 @@ class RAGService():
                 })
                 | self.rag_prompt
                 | chat_openai
-                | self.output_parser
             )
 
             # Step 3: Stream RAG response with token tracking
             full_response = ""
-            with get_openai_callback() as cb:
-                async for chunk in rag_streaming_chain.astream(question):
-                    if chunk:
-                        full_response += chunk
-                        yield chunk
+            full_chunk = None
+            async for chunk in rag_streaming_chain.astream(question):
+                if chunk:
+                    if full_chunk is None:
+                        full_chunk = chunk
+                    else:
+                        full_chunk += chunk
 
-                # Log token usage after streaming completes
-                rag_logger.info(f"RAGService.stream RAG tokens: input={cb.prompt_tokens}, output={cb.completion_tokens}, cost=${cb.total_cost:.6f}")
+                    # Yield content only (not usage metadata)
+                    if hasattr(chunk, 'content') and chunk.content:
+                        full_response += chunk.content
+                        yield chunk.content
+
+            # Extract token usage from final accumulated chunk
+            if full_chunk:
+                usage = self.rag_service._extract_usage_metadata(full_chunk)
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                cost_usd = self.token_counter.calculate_cost(
+                    input_tokens,
+                    output_tokens,
+                    settings.openai_model_comprehensive,
+                )
+                rag_logger.info(f"RAGService.stream RAG tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
 
             # Step 4: Handle personalization if requested
             if use_personalization:

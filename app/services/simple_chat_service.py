@@ -401,7 +401,7 @@ class SimpleChatService:
             # Stream response from RAG service (includes personalization if requested) + timing
             rag_start_time = time.time()
             full_response = ""
-            async for chunk in self.new_rag_service.stream(
+            async for chunk in self.new_rag_service.generate_response_stream(
                 question=query,
                 course_id=course_id,
                 chatroom_id=chatroom_id,

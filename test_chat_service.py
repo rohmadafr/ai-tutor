@@ -416,7 +416,7 @@ async def clear_redis_cache():
         # Connect to cache Redis (port 6380)
         cache_client = redis.from_url(settings.redis_cache_url)
         await cache_client.flushdb()
-        await cache_client.close()
+        await cache_client.aclose()
         print("🧹 Redis cache cleared successfully")
     except Exception as e:
         print(f"⚠️ Failed to clear Redis cache: {e}")
