@@ -6,10 +6,11 @@ from pathlib import Path
 class Settings(BaseSettings):
     # OpenAI Configuration
     openai_api_key: str = Field(..., env="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-4o-mini", env="OPENAI_MODEL")
+    openai_model_comprehensive: str = Field(default="gpt-4o-mini", env="OPENAI_MODEL_COMPREHENSIVE")
+    openai_model_personalized: str = Field(default="gpt-4o-nano", env="OPENAI_MODEL_PERSONALIZED")
     openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
     openai_max_tokens: int = Field(default=4096, env="OPENAI_MAX_TOKENS")
-    openai_temperature: float = Field(default=0.7, env="OPENAI_TEMPERATURE")
+    openai_temperature: float = Field(default=0.5, env="OPENAI_TEMPERATURE")
 
     # PostgreSQL Configuration
     postgres_db: str = Field(default="postgres", env="POSTGRES_DB")

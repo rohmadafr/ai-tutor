@@ -79,9 +79,6 @@ async def upload_document(
 
                 # Convert LangChain docs to our format
                 for doc in langchain_docs:
-                    # Log the metadata we're getting from PDF extraction
-                    api_logger.info(f"PDF chunk metadata: {doc.metadata}")
-
                     documents.append({
                         "content": doc.page_content,
                         "metadata": {

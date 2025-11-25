@@ -5,9 +5,8 @@ Following the exact implementation pattern from @cesc_redis_ai.ipynb
 import os
 import time
 import uuid
-import numpy as np
 import redis.asyncio as redis
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from redisvl.index import AsyncSearchIndex
 from redisvl.query import VectorQuery
 from redisvl.schema import IndexSchema
@@ -134,20 +133,9 @@ class CustomCacheService:
         if not self.connected:
             await self.connect()
 
-    def add_user_memory(self, user_id: str, memory_type: str, content: str):
-        """Add user memory for personalization (following reference pattern)"""
-        if user_id not in self.user_memories:
-            self.user_memories[user_id] = {"preferences": [], "history": [], "goals": []}
-        self.user_memories[user_id][memory_type].append(content)
-        cache_logger.info(f"Added user memory: user_id={user_id}, type={memory_type}")
-
-    def get_user_memory(self, user_id: str) -> Dict:
-        """Get user memory for personalization"""
-        return self.user_memories.get(user_id, {})
-
-    def generate_embedding(self, text: str) -> List[float]:
+    async def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for text (following reference pattern)"""
-        return self.vectorizer.aembed(text)
+        return await self.vectorizer.aembed(text)
 
     async def search_cache(
         self,
@@ -182,9 +170,14 @@ class CustomCacheService:
                 score = getattr(first, 'vector_distance', None)
                 try:
                     score_float = float(score) if score is not None else None
-                    if score_float is not None and score_float <= distance_threshold:
-                        cache_logger.info(f"🎯 Cache hit with distance: {score_float:.4f}")
-                        return {field: getattr(first, field, '') for field in return_fields}
+                    # Handle floating point precision issues with negative zero
+                    if score_float is not None:
+                        # Convert -0.0000 to 0.0000 for proper comparison
+                        if abs(score_float) < 1e-10:
+                            score_float = 0.0
+                        if score_float <= distance_threshold:
+                            cache_logger.info(f"🎯 Cache hit with distance: {score_float:.4f}")
+                            return {field: getattr(first, field, '') for field in return_fields}
                 except (ValueError, TypeError):
                     cache_logger.info(f"🔍 Invalid score format: {score}")
                     pass
@@ -239,40 +232,28 @@ class CustomCacheService:
             # Get cached response
             cached_response = cached_result["response"]
 
-            # Check for user context for personalization
-            user_context = self.get_user_memory(user_id)
-            if user_context:
-                # Personalize the cached response
-                result = self.llm.personalize_response(cached_response, user_context, prompt)
+            # For now, skip personalization for cached responses
+            result = {
+                "response": cached_response,
+                "model": cached_result.get("model", "unknown"),
+                "latency_ms": int((time.time() - start_time) * 1000),
+                "input_tokens": 0,
+                "output_tokens": 0
+            }
 
-                # Log personalized cache hit
-                self.telemetry.log(
-                    user_id=user_id,
-                    method="context_query",
-                    latency_ms=result["latency_ms"],
-                    input_tokens=result["input_tokens"],
-                    output_tokens=result["output_tokens"],
-                    cache_status="hit_personalized",
-                    response_source=result["model"]
-                )
+            # Log cache hit
+            self.telemetry.log(
+                user_id=user_id,
+                method="context_query",
+                latency_ms=result["latency_ms"],
+                input_tokens=result["input_tokens"],
+                output_tokens=result["output_tokens"],
+                cache_status="hit",
+                response_source=result["model"]
+            )
 
-                cache_logger.info(f"✅ Cache HIT (Personalized): latency_ms={result['latency_ms']}")
-                return result["response"]
-            else:
-                # Return raw cached response without personalization
-                cache_latency = (time.time() - start_time) * 1000
-                self.telemetry.log(
-                    user_id=user_id,
-                    method="context_query",
-                    latency_ms=round(cache_latency, 2),
-                    input_tokens=0,
-                    output_tokens=0,
-                    cache_status="hit_raw",
-                    response_source="cache"
-                )
-
-                cache_logger.info(f"✅ Cache HIT (Raw): latency_ms={cache_latency:.2f}")
-                return cached_response
+            cache_logger.info(f"✅ Cache HIT: latency_ms={result['latency_ms']}")
+            return result["response"]
 
         else:
             # Cache miss - return None to let RAG handle it

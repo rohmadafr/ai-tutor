@@ -107,7 +107,7 @@ async def websocket_chat_lcel(
             "timestamp": time.time(),
             "message": "WebSocket connected. Ready for LCEL streaming chat!",
             "config": {
-                "model": settings.openai_model,
+                "model": settings.openai_model_comprehensive,
                 "rag_threshold": settings.rag_distance_threshold,
                 "streaming": True
             }

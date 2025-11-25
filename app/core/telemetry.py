@@ -29,7 +29,7 @@ class TokenCounter:
             model_name: Model name for token encoding (defaults to settings.openai_model)
         """
         # Use settings as default, fallback to "gpt-4o" if settings is empty
-        self.model_name = model_name or settings.openai_model or "gpt-4o"
+        self.model_name = model_name or settings.openai_model_comprehensive or "gpt-4o-mini"
 
         # Initialize tiktoken encoding
         try:
@@ -63,13 +63,6 @@ class TokenCounter:
             "text-embedding-3-small": {"input": 0.020, "output": 0},  # $0.020 per 1M tokens
             "text-embedding-3-large": {"input": 0.130, "output": 0},  # $0.130 per 1M tokens
             "text-embedding-ada-002": {"input": 0.100, "output": 0},  # $0.100 per 1M tokens
-
-            # Internal/Special models
-            "semantic_cache": {"input": 0, "output": 0},  # No cost for cache operations
-            "cache_raw": {"input": 0, "output": 0},  # No cost for cache hit
-            "cache_personalized": {"input": 0.150, "output": 0.600},  # Same as gpt-4o-mini for personalization
-            "rag_service": {"input": 0.020, "output": 0},  # Only embedding cost for RAG
-            "personalization": {"input": 0.150, "output": 0.600},  # Same as gpt-4o-mini
         }
 
     def count_tokens(self, text: str) -> int:

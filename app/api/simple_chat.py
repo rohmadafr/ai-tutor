@@ -199,7 +199,7 @@ async def chat_completion_lcel(request: ChatRequest) -> ChatResponse:
                 "method": response.get("method", "lcel"),
                 "context_quality": response.get("context_quality", "unknown"),
                 "rag_threshold": response.get("rag_threshold", 0.3),
-                "model_used": settings.openai_model,
+                "model_used": settings.openai_model_comprehensive,
                 "response_source": response.get("method", "lcel")
             },
             response_source=response.get("method", "lcel")

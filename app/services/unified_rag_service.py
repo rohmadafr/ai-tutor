@@ -49,7 +49,7 @@ class UnifiedRAGService:
         )
 
         self.llm = ChatOpenAI(
-            model=settings.openai_model,
+            model=settings.openai_model_comprehensive,
             temperature=settings.openai_temperature,
             max_tokens=settings.openai_max_tokens,
             openai_api_key=settings.openai_api_key
@@ -689,210 +689,566 @@ def format_context(docs: List[Document], threshold: float = None) -> str:
     return "\n\n".join(context_parts)
 
 
-class LCELRAGService:
-    """LCEL-enhanced RAG service with hybrid threshold logic - using existing methods directly"""
+# class LCELRAGService:
+#     """LCEL-enhanced RAG service with hybrid threshold logic - using existing methods directly"""
 
-    def __init__(self, rag_service: Optional[UnifiedRAGService] = None):
-        from ..config.settings import settings
+#     def __init__(self, rag_service: Optional[UnifiedRAGService] = None):
+#         from ..config.settings import settings
 
-        self.rag_service = rag_service or unified_rag_service
-        self.rag_threshold = settings.rag_distance_threshold  # Use settings threshold
+#         self.rag_service = rag_service or unified_rag_service
+#         self.rag_threshold = settings.rag_distance_threshold  # Use settings threshold
 
-        # Create prompt template
+#         # Create prompt template
+#         self.rag_prompt = ChatPromptTemplate.from_template("""
+#         Anda adalah AI Tutor Assistant yang membantu menjawab pertanyaan user pada sebuah Learning Management System
+#         berdasarkan konteks atau knowledge base pada course yang diberikan.
+
+#         Konteks:
+#         {context}
+
+#         Pertanyaan: {question}
+
+#         Jawab pertanyaan berdasarkan konteks yang diberikan. Jika konteks tidak mengandung
+#         informasi yang cukup untuk menjawab pertanyaan, katakan "Saya tidak memiliki informasi
+#         yang cukup untuk menjawab pertanyaan ini."
+
+#         Jawab dalam bahasa yang sama dengan pertanyaan.
+#         """)
+
+#         # Output parser
+#         self.output_parser = StrOutputParser()
+
+#         rag_logger.info("LCELRAGService initialized")
+
+#     async def _retrieve_documents(self, query: str, course_id: Optional[str] = None, top_k: int = 5) -> List[Document]:
+#         """
+#         Retrieve documents directly using existing UnifiedRAGService methods.
+#         Hybrid logic: top_k=5 + threshold validation for docs 1-3
+#         """
+#         try:
+#             await self.rag_service._ensure_connection()
+
+#             # Generate query embedding using existing embeddings
+#             query_embedding = await self.rag_service.embeddings.aembed_query(query)
+
+#             # Search using existing method
+#             results = await self.rag_service._search_knowledge_base(
+#                 query_vector=query_embedding,
+#                 course_id=course_id,
+#                 top_k=top_k
+#             )
+
+#             # Convert RedisVL results to LangChain Documents
+#             documents = []
+#             for result in results:
+#                 content = result.get("text", "")
+#                 metadata = {
+#                     "material_id": result.get("material_id", ""),
+#                     "course_id": result.get("course_id", ""),
+#                     "filename": result.get("filename", ""),
+#                     "score": result.get("score", 0.0),
+#                     "vector_distance": result.get("vector_distance", 1.0)
+#                 }
+#                 documents.append(Document(page_content=content, metadata=metadata))
+
+#             rag_logger.info(f"Retrieved {len(documents)} documents for query: {query[:50]}...")
+#             return documents
+
+#         except Exception as e:
+#             rag_logger.error(f"Document retrieval failed: {e}")
+#             return []
+
+#     def _create_rag_chain(self, documents: List[Document], threshold: float):
+#         """
+#         Create LCEL RAG chain with hybrid threshold logic.
+#         Documents already retrieved, now create processing chain.
+#         """
+#         # Format context using hybrid logic
+#         context = format_context(documents, threshold)
+
+#         # LCEL chain: context + question -> prompt -> llm -> parser
+#         rag_chain = (
+#             RunnableParallel({
+#                 "context": lambda _: context,
+#                 "question": RunnablePassthrough()
+#             })
+#             | self.rag_prompt
+#             | self.rag_service.llm
+#             | self.output_parser
+#         )
+
+#         return rag_chain
+
+#     async def query(self, question: str, course_id: Optional[str] = None,
+#                    rag_threshold: Optional[float] = None, top_k: int = 5) -> Dict[str, Any]:
+#         """Query using LCEL pattern with hybrid threshold logic"""
+#         try:
+#             start_time = time.time()
+#             threshold = rag_threshold or self.rag_threshold
+
+#             # Step 1: Retrieve documents (top_k=5 with hybrid threshold)
+#             documents = await self._retrieve_documents(question, course_id, top_k)
+
+#             if not documents:
+#                 return {
+#                     "answer": "Saya tidak memiliki informasi yang cukup untuk menjawab pertanyaan ini.",
+#                     "sources": [],
+#                     "course_id": course_id,
+#                     "context_used": False,
+#                     "context_quality": "none",
+#                     "rag_threshold": threshold,
+#                     "response_time_ms": (time.time() - start_time) * 1000,
+#                     "method": "lcel_no_docs"
+#                 }
+
+#             # Step 2: Create and execute RAG chain
+#             rag_chain = self._create_rag_chain(documents, threshold)
+#             answer = await rag_chain.ainvoke(question)
+
+#             # Step 3: Determine context quality using hybrid logic
+#             used_context = should_use_context(documents, threshold)
+#             context_quality = "comprehensive" if used_context else "limited"
+
+#             # Step 4: Format sources (filtered by hybrid logic)
+#             sources = []
+
+#             # Always include the best document (doc[0])
+#             if documents:
+#                 sources.append({
+#                     "content": documents[0].page_content,
+#                     "metadata": documents[0].metadata
+#                 })
+
+#             # Add secondary docs only if they pass threshold
+#             if used_context:  # This means docs[1:4] have good scores
+#                 for doc in documents[1:4]:  # docs 1-3 -> docs 2-4
+#                     distance = doc.metadata.get("vector_distance", 1.0)
+#                     if distance < threshold:
+#                         sources.append({
+#                             "content": doc.page_content,
+#                             "metadata": doc.metadata
+#                         })
+
+#             response_time = (time.time() - start_time) * 1000
+#             rag_logger.info(f"LCEL query completed in {response_time:.2f}ms, quality={context_quality}")
+
+#             return {
+#                 "answer": answer,
+#                 "sources": sources,
+#                 "course_id": course_id,
+#                 "context_used": True,
+#                 "context_quality": context_quality,
+#                 "rag_threshold": threshold,
+#                 "response_time_ms": response_time,
+#                 "method": "lcel"
+#             }
+
+#         except Exception as e:
+#             rag_logger.error(f"LCEL query failed: {e}")
+#             return {
+#                 "answer": "Maaf, terjadi kesalahan saat memproses pertanyaan.",
+#                 "sources": [],
+#                 "course_id": course_id,
+#                 "context_used": False,
+#                 "error": str(e),
+#                 "method": "lcel_error"
+#             }
+
+#     async def stream(self, question: str, course_id: Optional[str] = None,
+#                     rag_threshold: Optional[float] = None, top_k: int = 5):
+#         """Streaming version of LCEL query with hybrid threshold logic"""
+#         try:
+#             threshold = rag_threshold or self.rag_threshold
+
+#             # Step 1: Retrieve documents first (non-streaming part)
+#             documents = await self._retrieve_documents(question, course_id, top_k)
+
+#             if not documents:
+#                 yield "Saya tidak memiliki informasi yang cukup untuk menjawab pertanyaan ini."
+#                 return
+
+#             # Step 2: Create streaming chain with pre-retrieved context
+#             context = format_context(documents, threshold)
+#             streaming_chain = (
+#                 RunnableParallel({
+#                     "context": lambda _: context,
+#                     "question": RunnablePassthrough()
+#                 })
+#                 | self.rag_prompt
+#                 | self.rag_service.llm
+#                 | self.output_parser
+#             )
+
+#             # Step 3: Stream LLM response
+#             async for chunk in streaming_chain.astream(question):
+#                 if chunk:
+#                     yield chunk
+
+#         except Exception as e:
+#             rag_logger.error(f"LCEL streaming failed: {e}")
+#             yield f"Error: {str(e)}"
+
+#     def set_threshold(self, threshold: float):
+#         """Update RAG threshold"""
+#         self.rag_threshold = threshold
+#         rag_logger.info(f"RAG threshold updated to {threshold}")
+
+
+# # Global LCEL service instance
+# lcel_rag_service = LCELRAGService()
+
+
+# =====================================
+# INTEGRASI RAGService + Database + LCEL
+# =====================================
+
+class RAGService():
+    """
+    RAG Service dengan LangChain Expression Language + Database Integration
+    """
+
+    def __init__(self):
+        """Initialize RAG service dengan LCEL pattern"""
+        # Use existing RAG service untuk knowledge base
+        self.rag_service = UnifiedRAGService()
+
+        # Import components
+        from ..core.llm_client import LLMClient
+        from ..core.telemetry import TokenCounter
+        from ..core.database import get_db_session
+
+        self.llm_client = LLMClient(TokenCounter())
+        self.db_session = get_db_session
+        self.rag_logger = rag_logger
+
+        # Initialize LangChain components
+        self._setup_lcel_components()
+
+    def _setup_lcel_components(self):
+        """Setup LangChain Expression Language components"""
+        from langchain_core.prompts import ChatPromptTemplate
+
+        # Main RAG prompt template
         self.rag_prompt = ChatPromptTemplate.from_template("""
-        Anda adalah AI Tutor Assistant yang membantu menjawab pertanyaan user pada sebuah Learning Management System
+        Anda adalah AI Tutor Assistant yang membantu menjawab pertanyaan user pada Learning Management System
         berdasarkan konteks atau knowledge base pada course yang diberikan.
 
-        Konteks:
-        {context}
+        Knowledge Base:
+        {knowledge_base}
 
         Pertanyaan: {question}
 
-        Jawab pertanyaan berdasarkan konteks yang diberikan. Jika konteks tidak mengandung
+        Jawab pertanyaan berdasarkan knowledge base yang diberikan. Jika knowledge base tidak mengandung
         informasi yang cukup untuk menjawab pertanyaan, katakan "Saya tidak memiliki informasi
         yang cukup untuk menjawab pertanyaan ini."
 
         Jawab dalam bahasa yang sama dengan pertanyaan.
         """)
 
+        # Personalization prompt template
+        self.personalization_prompt = ChatPromptTemplate.from_template("""
+        Anda adalah personalization assistant. Response berikut telah dihasilkan untuk user query.
+
+        Query Original: {original_query}
+        Response yang Ada: {base_response}
+
+        User Context:
+        {user_context}
+
+        Conversation History:
+        {history}
+
+        Personalisasi response tersebut sesuai dengan user context dan conversation history.
+        Pertahankan esensi informasi yang sama, tapi sesuaikan dengan preferensi user.
+
+        Response Personalisasi:
+        """)
+
         # Output parser
         self.output_parser = StrOutputParser()
 
-        rag_logger.info("LCELRAGService initialized")
-
-    async def _retrieve_documents(self, query: str, course_id: Optional[str] = None, top_k: int = 5) -> List[Document]:
+    async def generate_response(
+        self,
+        question: str,
+        course_id: Optional[str] = None,
+        chatroom_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        use_personalization: bool = False
+    ) -> Dict[str, Any]:
         """
-        Retrieve documents directly using existing UnifiedRAGService methods.
-        Hybrid logic: top_k=5 + threshold validation for docs 1-3
+        Generate response menggunakan LangChain Expression Language dengan database tracking.
         """
-        try:
-            await self.rag_service._ensure_connection()
-
-            # Generate query embedding using existing embeddings
-            query_embedding = await self.rag_service.embeddings.aembed_query(query)
-
-            # Search using existing method
-            results = await self.rag_service._search_knowledge_base(
-                query_vector=query_embedding,
-                course_id=course_id,
-                top_k=top_k
-            )
-
-            # Convert RedisVL results to LangChain Documents
-            documents = []
-            for result in results:
-                content = result.get("text", "")
-                metadata = {
-                    "material_id": result.get("material_id", ""),
-                    "course_id": result.get("course_id", ""),
-                    "filename": result.get("filename", ""),
-                    "score": result.get("score", 0.0),
-                    "vector_distance": result.get("vector_distance", 1.0)
-                }
-                documents.append(Document(page_content=content, metadata=metadata))
-
-            rag_logger.info(f"Retrieved {len(documents)} documents for query: {query[:50]}...")
-            return documents
-
-        except Exception as e:
-            rag_logger.error(f"Document retrieval failed: {e}")
-            return []
-
-    def _create_rag_chain(self, documents: List[Document], threshold: float):
-        """
-        Create LCEL RAG chain with hybrid threshold logic.
-        Documents already retrieved, now create processing chain.
-        """
-        # Format context using hybrid logic
-        context = format_context(documents, threshold)
-
-        # LCEL chain: context + question -> prompt -> llm -> parser
-        rag_chain = (
-            RunnableParallel({
-                "context": lambda _: context,
-                "question": RunnablePassthrough()
-            })
-            | self.rag_prompt
-            | self.rag_service.llm
-            | self.output_parser
-        )
-
-        return rag_chain
-
-    async def query(self, question: str, course_id: Optional[str] = None,
-                   rag_threshold: Optional[float] = None, top_k: int = 5) -> Dict[str, Any]:
-        """Query using LCEL pattern with hybrid threshold logic"""
         try:
             start_time = time.time()
-            threshold = rag_threshold or self.rag_threshold
 
-            # Step 1: Retrieve documents (top_k=5 with hybrid threshold)
-            documents = await self._retrieve_documents(question, course_id, top_k)
+            # Step 1: Get context components
+            rag_result = await self._get_knowledge_base_context(question, course_id)
+            user_context_text, history_text = await self._get_context_components(
+                chatroom_id, user_id, course_id
+            ) if use_personalization else ("", "")
 
-            if not documents:
-                return {
-                    "answer": "Saya tidak memiliki informasi yang cukup untuk menjawab pertanyaan ini.",
-                    "sources": [],
-                    "course_id": course_id,
-                    "context_used": False,
-                    "context_quality": "none",
-                    "rag_threshold": threshold,
-                    "response_time_ms": (time.time() - start_time) * 1000,
-                    "method": "lcel_no_docs"
-                }
+            # Step 2: Build LCEL chain using LangChain ChatOpenAI
+            from langchain_openai import ChatOpenAI
+            chat_openai = ChatOpenAI(
+                model=settings.openai_model_comprehensive,
+                temperature=settings.openai_temperature,
+                api_key=settings.openai_api_key
+            )
 
-            # Step 2: Create and execute RAG chain
-            rag_chain = self._create_rag_chain(documents, threshold)
-            answer = await rag_chain.ainvoke(question)
-
-            # Step 3: Determine context quality using hybrid logic
-            used_context = should_use_context(documents, threshold)
-            context_quality = "comprehensive" if used_context else "limited"
-
-            # Step 4: Format sources (filtered by hybrid logic)
-            sources = []
-
-            # Always include the best document (doc[0])
-            if documents:
-                sources.append({
-                    "content": documents[0].page_content,
-                    "metadata": documents[0].metadata
-                })
-
-            # Add secondary docs only if they pass threshold
-            if used_context:  # This means docs[1:4] have good scores
-                for doc in documents[1:4]:  # docs 1-3 -> docs 2-4
-                    distance = doc.metadata.get("vector_distance", 1.0)
-                    if distance < threshold:
-                        sources.append({
-                            "content": doc.page_content,
-                            "metadata": doc.metadata
-                        })
-
-            response_time = (time.time() - start_time) * 1000
-            rag_logger.info(f"LCEL query completed in {response_time:.2f}ms, quality={context_quality}")
-
-            return {
-                "answer": answer,
-                "sources": sources,
-                "course_id": course_id,
-                "context_used": True,
-                "context_quality": context_quality,
-                "rag_threshold": threshold,
-                "response_time_ms": response_time,
-                "method": "lcel"
-            }
-
-        except Exception as e:
-            rag_logger.error(f"LCEL query failed: {e}")
-            return {
-                "answer": "Maaf, terjadi kesalahan saat memproses pertanyaan.",
-                "sources": [],
-                "course_id": course_id,
-                "context_used": False,
-                "error": str(e),
-                "method": "lcel_error"
-            }
-
-    async def stream(self, question: str, course_id: Optional[str] = None,
-                    rag_threshold: Optional[float] = None, top_k: int = 5):
-        """Streaming version of LCEL query with hybrid threshold logic"""
-        try:
-            threshold = rag_threshold or self.rag_threshold
-
-            # Step 1: Retrieve documents first (non-streaming part)
-            documents = await self._retrieve_documents(question, course_id, top_k)
-
-            if not documents:
-                yield "Saya tidak memiliki informasi yang cukup untuk menjawab pertanyaan ini."
-                return
-
-            # Step 2: Create streaming chain with pre-retrieved context
-            context = format_context(documents, threshold)
-            streaming_chain = (
+            rag_chain = (
                 RunnableParallel({
-                    "context": lambda _: context,
+                    "knowledge_base": lambda _: rag_result.get("context", ""),
+                    "user_context": lambda _: user_context_text,
+                    "history": lambda _: history_text,
                     "question": RunnablePassthrough()
                 })
                 | self.rag_prompt
-                | self.rag_service.llm
+                | chat_openai
                 | self.output_parser
             )
 
-            # Step 3: Stream LLM response
-            async for chunk in streaming_chain.astream(question):
+            # Step 3: Generate response
+            response_text = await rag_chain.ainvoke(question)
+
+            # Step 4: Handle personalization if needed
+            final_response = response_text
+            model_used = "gpt-4o-nano"
+            input_tokens = 0
+            output_tokens = 0
+            cost_usd = 0.0
+
+            if use_personalization:
+                personalization_result = await self._personalize_response(
+                    response_text, user_context_text, history_text, question
+                )
+                final_response = personalization_result.get("response", response_text)
+
+            # Step 5: Calculate metrics
+            response_time_ms = (time.time() - start_time) * 1000
+
+            return {
+                "response": final_response,
+                "model_used": model_used,
+                "response_type": "rag_response",
+                "source_type": "knowledge_base",
+                "knowledge_base_used": bool(rag_result.get("context")),
+                "user_context_used": bool(user_context_text),
+                "history_used": bool(history_text),
+                "source_documents": rag_result.get("sources", []),
+                "response_time_ms": response_time_ms,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "cost_usd": cost_usd
+            }
+
+        except Exception as e:
+            self.rag_logger.error(f"RAGService generation failed: {e}")
+            return {
+                "response": "Maaf, saya mengalami kesalahan dalam memproses permintaan Anda.",
+                "error": str(e),
+                "response_type": "error"
+            }
+
+    async def _get_knowledge_base_context(self, question: str, course_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get knowledge base context using existing RAG service"""
+        return await self.rag_service.query(question, course_id)
+
+    async def _get_context_components(
+        self,
+        chatroom_id: str,
+        user_id: str,
+        course_id: str
+    ) -> tuple[str, str]:
+        """Get user context and conversation history from database"""
+        from ..schemas.db_models import UserContext, Chatroom
+
+        async with self.db_session() as db:
+            # Get user context
+            user_context = await UserContext.aget_or_create(db, user_id, course_id)
+            user_context_text = user_context.get_context()
+
+            # Get conversation history
+            chatroom = await db.get(Chatroom, chatroom_id)
+            history_text = ""
+
+            if chatroom:
+                history_text = await chatroom.get_conversation_history(db, limit=5)
+
+            return user_context_text, history_text
+
+    async def _personalize_response_stream(
+        self,
+        base_response: str,
+        user_context: str,
+        history: str,
+        original_query: str
+    ):
+        """Streaming version of response personalization using GPT-4o-nano"""
+        try:
+            # Use GPT-4o-nano specifically for personalization
+            from langchain_openai import ChatOpenAI
+            personalization_llm = ChatOpenAI(
+                model=settings.openai_model_personalized,
+                temperature=settings.openai_temperature,
+                streaming=True,
+                openai_api_key=settings.openai_api_key
+            )
+
+            # Build personalization streaming chain
+            personalization_chain = (
+                RunnableParallel({
+                    "base_response": lambda _: base_response,
+                    "original_query": lambda _: original_query,
+                    "user_context": lambda _: user_context,
+                    "history": lambda _: history
+                })
+                | self.personalization_prompt
+                | personalization_llm
+                | self.output_parser
+            )
+
+            # Stream personalized response
+            async for chunk in personalization_chain.astream({}):
                 if chunk:
                     yield chunk
 
         except Exception as e:
-            rag_logger.error(f"LCEL streaming failed: {e}")
-            yield f"Error: {str(e)}"
+            self.rag_logger.error(f"Streaming personalization failed: {e}")
+            # Fallback to base response without personalization
+            yield base_response
 
-    def set_threshold(self, threshold: float):
-        """Update RAG threshold"""
-        self.rag_threshold = threshold
-        rag_logger.info(f"RAG threshold updated to {threshold}")
+    async def _personalize_response(
+        self,
+        base_response: str,
+        user_context: str,
+        history: str,
+        original_query: str
+    ) -> Dict[str, Any]:
+        """Personalize response using LangChain LCEL"""
+        try:
+            # Build personalization chain
+            personalization_chain = (
+                RunnableParallel({
+                    "base_response": lambda _: base_response,
+                    "original_query": lambda _: original_query,
+                    "user_context": lambda _: user_context,
+                    "history": lambda _: history
+                })
+                | self.personalization_prompt
+                | self.llm_client.async_client
+                | self.output_parser
+            )
 
+            # Generate personalized response using GPT-4o-nano
+            personalized_response = await personalization_chain.ainvoke({})
 
-# Global LCEL service instance
-lcel_rag_service = LCELRAGService()
+            return {
+                "response": personalized_response,
+                "model_used": "gpt-4o-nano"
+            }
+
+        except Exception as e:
+            self.rag_logger.error(f"Personalization failed: {e}")
+            return {
+                "response": base_response,  # Fallback
+                "model_used": "gpt-4o-mini"
+            }
+
+    async def store_in_database(
+        self,
+        message_id: str,
+        chatroom_id: str,
+        user_id: str,
+        response_data: Dict[str, Any]
+    ) -> bool:
+        """Store message and response tracking in database"""
+        try:
+            from ..schemas.db_models import Response
+
+            async with self.db_session() as db:
+                Response.create_response(
+                    db=db,
+                    message_id=message_id,
+                    chatroom_id=chatroom_id,
+                    user_id=user_id,
+                    response_text=response_data["response"],
+                    model_used=response_data["model_used"],
+                    response_type=response_data["response_type"],
+                    source_type=response_data["source_type"],
+                    response_time_ms=response_data["response_time_ms"],
+                    input_tokens=response_data.get("input_tokens", 0),
+                    output_tokens=response_data.get("output_tokens", 0),
+                    cost_usd=response_data.get("cost_usd", 0.0),
+                    cache_hit=response_data.get("cache_hit", False),
+                    cache_similarity_score=response_data.get("cache_similarity_score"),
+                    personalized=response_data.get("user_context_used", False)
+                )
+
+            return True
+
+        except Exception as e:
+            self.rag_logger.error(f"Failed to store in database: {e}")
+            return False
+
+    async def stream(
+        self,
+        question: str,
+        course_id: Optional[str] = None,
+        chatroom_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        use_personalization: bool = False
+    ):
+        """
+        Streaming version of generate_response with consistent parameters.
+        Handles RAG + optional personalization with streaming.
+        """
+        try:
+            # Step 1: Get context components
+            rag_result = await self._get_knowledge_base_context(question, course_id)
+
+            # Step 2: Build RAG streaming chain with LangChain ChatOpenAI
+            from langchain_openai import ChatOpenAI
+            chat_openai = ChatOpenAI(
+                model=settings.openai_model_comprehensive,
+                temperature=settings.openai_temperature,
+                api_key=settings.openai_api_key,
+                streaming=True
+            )
+
+            rag_streaming_chain = (
+                RunnableParallel({
+                    "knowledge_base": lambda _: rag_result.get("answer", ""),
+                    "question": RunnablePassthrough()
+                })
+                | self.rag_prompt
+                | chat_openai
+                | self.output_parser
+            )
+
+            # Step 3: Stream RAG response
+            full_response = ""
+            async for chunk in rag_streaming_chain.astream(question):
+                if chunk:
+                    full_response += chunk
+                    yield chunk
+
+            # Step 4: Handle personalization if requested
+            if use_personalization:
+                user_context_text, history_text = await self._get_context_components(
+                    chatroom_id, user_id, course_id
+                )
+
+                if user_context_text or history_text:
+                    # Use dedicated streaming personalization method with GPT-4o-nano
+                    async for chunk in self._personalize_response_stream(
+                        full_response, user_context_text, history_text, question
+                    ):
+                        yield chunk
+
+        except Exception as e:
+            self.rag_logger.error(f"RAGService streaming failed: {e}")
+            yield f"Maaf, terjadi kesalahan saat memproses permintaan: {str(e)}"
+
+# Global RAG service instance with database integration
+rag_service = RAGService()

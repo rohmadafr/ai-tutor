@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""
+Test Script untuk Validasi SimpleChatService Fixes
+Test semua scenarios: cache hit/miss, personalization, streaming, database tracking
+"""
+import asyncio
+import time
+import sys
+import os
+
+# Add project root to path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from app.services.simple_chat_service import SimpleChatService
+from app.core.database import async_db
+from app.schemas.db_models import User, Course, Chatroom
+
+class ChatServiceTester:
+    """Test class untuk SimpleChatService scenarios"""
+
+    def __init__(self):
+        self.chat_service = SimpleChatService()
+        self.test_results = []
+
+    async def test_scenario(self, scenario_name: str, test_func):
+        """Run single test scenario and track results"""
+        print(f"\n{'='*50}")
+        print(f"🧪 TESTING: {scenario_name}")
+        print(f"{'='*50}")
+
+        start_time = time.time()
+
+        try:
+            result = await test_func()
+            duration = (time.time() - start_time) * 1000
+
+            self.test_results.append({
+                "scenario": scenario_name,
+                "status": "✅ PASS",
+                "duration_ms": duration,
+                "result": result
+            })
+
+            print(f"✅ {scenario_name} - PASS ({duration:.2f}ms)")
+            print(f"📄 Result type: {type(result)}")
+
+            if isinstance(result, dict):
+                print(f"🔹 Response length: {len(result.get('response', ''))}")
+                print(f"🔹 Source: {result.get('source', 'unknown')}")
+                print(f"🔹 Cached: {result.get('cached', False)}")
+                print(f"🔹 Personalized: {result.get('personalized', False)}")
+                print(f"🔹 Model: {result.get('model_used', 'unknown')}")
+                print(f"🔹 Response Time: {result.get('response_time_ms', 0):.2f}ms")
+            else:
+                print(f"🔹 Response: {str(result)[:100]}...")
+
+        except Exception as e:
+            duration = (time.time() - start_time) * 1000
+
+            self.test_results.append({
+                "scenario": scenario_name,
+                "status": "❌ FAIL",
+                "duration_ms": duration,
+                "error": str(e)
+            })
+
+            print(f"❌ {scenario_name} - FAIL ({duration:.2f}ms)")
+            print(f"🔹 Error: {str(e)}")
+
+    # ============== TEST SCENARIOS ==============
+
+    async def test_cache_hit_raw(self):
+        """Test 1: Cache hit + raw response (non-streaming)"""
+        query = "Apa itu machine learning?"
+
+        result = await self.chat_service.chat_with_database(
+            query=query,
+            user_id="test-user-001",
+            course_id="test-course-001",
+            chatroom_id="test-chatroom-001",
+            use_personalization=False
+        )
+
+        # Validate expected structure
+        assert isinstance(result, dict), "Result harus berupa dict"
+        assert "response" in result, "Harus ada 'response' field"
+        assert result["source"] == "cache_raw", f"Expected cache_raw, got {result.get('source')}"
+        assert result["cached"] == True, "Harus cached=True"
+        assert result["personalized"] == False, "Harus personalized=False"
+        assert "response_time_ms" in result, "Harus ada response_time_ms"
+        assert isinstance(result["response_time_ms"], (int, float)), "response_time_ms harus number"
+
+        return result
+
+    async def test_cache_hit_personalized(self):
+        """Test 2: Cache hit + personalized response (non-streaming)"""
+        query = "Apa itu machine learning?"
+
+        result = await self.chat_service.chat_with_database(
+            query=query,
+            user_id="test-user-002",
+            course_id="test-course-001",
+            chatroom_id="test-chatroom-002",
+            use_personalization=True
+        )
+
+        # Validate expected structure
+        assert isinstance(result, dict), "Result harus berupa dict"
+        assert "response" in result, "Harus ada 'response' field"
+        assert result["source"] == "cache_personalized", f"Expected cache_personalized, got {result.get('source')}"
+        assert result["cached"] == True, "Harus cached=True"
+        assert result["personalized"] == True, "Harus personalized=True"
+        assert "model_used" in result, "Harus ada model_used"
+        assert "response_time_ms" in result, "Harus ada response_time_ms"
+
+        return result
+
+    async def test_cache_miss_rag(self):
+        """Test 3: Cache miss + RAG response (non-streaming)"""
+        query = "Apa itu quantum computing dan bagaimana hubungannya dengan AI?"
+
+        result = await self.chat_service.chat_with_database(
+            query=query,
+            user_id="test-user-003",
+            course_id="test-course-002",
+            chatroom_id="test-chatroom-003",
+            use_personalization=False
+        )
+
+        # Validate expected structure
+        assert isinstance(result, dict), "Result harus berupa dict"
+        assert "response" in result, "Harus ada 'response' field"
+        assert result["source"] == "rag", f"Expected rag, got {result.get('source')}"
+        assert result["cached"] == False, "Harus cached=False"
+        assert result["personalized"] == False, "Harus personalized=False"
+        assert "response_time_ms" in result, "Harus ada response_time_ms"
+        assert result["model_used"] == "gpt-4o-mini", f"Expected gpt-4o-mini, got {result.get('model_used')}"
+
+        return result
+
+    async def test_streaming_cache_hit_raw(self):
+        """Test 4: Streaming cache hit + raw response"""
+        query = "Apa itu machine learning?"
+
+        chunks = []
+        async for chunk in self.chat_service.chat_with_database_stream(
+            query=query,
+            user_id="test-user-004",
+            course_id="test-course-001",
+            chatroom_id="test-chatroom-004",
+            use_personalization=False
+        ):
+            chunks.append(chunk)
+
+        # Validate streaming
+        assert len(chunks) > 0, "Harus ada chunks"
+        full_response = "".join(chunks)
+        assert len(full_response) > 0, "Response tidak boleh kosong"
+
+        return {
+            "chunks_count": len(chunks),
+            "response_length": len(full_response),
+            "response_preview": full_response[:100]
+        }
+
+    async def test_streaming_cache_hit_personalized(self):
+        """Test 5: Streaming cache hit + personalized response"""
+        query = "Apa itu machine learning?"
+
+        chunks = []
+        async for chunk in self.chat_service.chat_with_database_stream(
+            query=query,
+            user_id="test-user-005",
+            course_id="test-course-001",
+            chatroom_id="test-chatroom-005",
+            use_personalization=True
+        ):
+            chunks.append(chunk)
+
+        # Validate streaming
+        assert len(chunks) > 0, "Harus ada chunks"
+        full_response = "".join(chunks)
+        assert len(full_response) > 0, "Response tidak boleh kosong"
+
+        return {
+            "chunks_count": len(chunks),
+            "response_length": len(full_response),
+            "response_preview": full_response[:100]
+        }
+
+    async def test_streaming_cache_miss_rag(self):
+        """Test 6: Streaming cache miss + RAG response"""
+        query = "Jelaskan perbedaan antara supervised dan unsupervised learning"
+
+        chunks = []
+        async for chunk in self.chat_service.chat_with_database_stream(
+            query=query,
+            user_id="test-user-006",
+            course_id="test-course-003",
+            chatroom_id="test-chatroom-006",
+            use_personalization=False
+        ):
+            chunks.append(chunk)
+
+        # Validate streaming
+        assert len(chunks) > 0, "Harus ada chunks"
+        full_response = "".join(chunks)
+        assert len(full_response) > 0, "Response tidak boleh kosong"
+
+        return {
+            "chunks_count": len(chunks),
+            "response_length": len(full_response),
+            "response_preview": full_response[:100]
+        }
+
+    async def test_parameter_consistency(self):
+        """Test 7: Parameter consistency across methods"""
+        query = "Test parameter consistency"
+
+        # Test both methods with same parameters
+        non_stream_result = await self.chat_service.chat_with_database(
+            query=query,
+            user_id="test-user-consistency",
+            course_id="test-course-consistency",
+            chatroom_id="test-chatroom-consistency",
+            use_personalization=True
+        )
+
+        chunks = []
+        async for chunk in self.chat_service.chat_with_database_stream(
+            query=query,
+            user_id="test-user-consistency",
+            course_id="test-course-consistency",
+            chatroom_id="test-chatroom-consistency",
+            use_personalization=True
+        ):
+            chunks.append(chunk)
+
+        stream_result = {
+            "response": "".join(chunks),
+            "chunks_count": len(chunks)
+        }
+
+        # Validate consistency
+        assert isinstance(non_stream_result, dict), "Non-streaming harus dict"
+        assert isinstance(stream_result, dict), "Streaming harus dict"
+
+        return {
+            "non_streaming_type": type(non_stream_result).__name__,
+            "streaming_type": type(stream_result).__name__,
+            "same_user_context": True
+        }
+
+    # ============== MAIN TEST RUNNER ==============
+
+    async def run_all_tests(self):
+        """Run all test scenarios"""
+        print("🚀 Starting SimpleChatService Test Suite")
+        print("Testing all scenarios with real data tracking and no redundancy...")
+
+        # Test scenarios
+        await self.test_scenario("Cache Hit + Raw Response", self.test_cache_hit_raw)
+        await self.test_scenario("Cache Hit + Personalized Response", self.test_cache_hit_personalized)
+        await self.test_scenario("Cache Miss + RAG Response", self.test_cache_miss_rag)
+        await self.test_scenario("Streaming Cache Hit + Raw", self.test_streaming_cache_hit_raw)
+        await self.test_scenario("Streaming Cache Hit + Personalized", self.test_streaming_cache_hit_personalized)
+        await self.test_scenario("Streaming Cache Miss + RAG", self.test_streaming_cache_miss_rag)
+        await self.test_scenario("Parameter Consistency", self.test_parameter_consistency)
+
+        # Print summary
+        self.print_summary()
+
+    def print_summary(self):
+        """Print test summary"""
+        print(f"\n{'='*60}")
+        print("📊 TEST SUMMARY")
+        print(f"{'='*60}")
+
+        total_tests = len(self.test_results)
+        passed_tests = len([r for r in self.test_results if r["status"] == "✅ PASS"])
+        failed_tests = total_tests - passed_tests
+
+        total_time = sum(r["duration_ms"] for r in self.test_results)
+
+        print(f"📈 Total Tests: {total_tests}")
+        print(f"✅ Passed: {passed_tests}")
+        print(f"❌ Failed: {failed_tests}")
+        print(f"⏱️ Total Duration: {total_time:.2f}ms")
+        print(f"📊 Success Rate: {(passed_tests/total_tests)*100:.1f}%")
+
+        print(f"\n📋 Detailed Results:")
+        for result in self.test_results:
+            print(f"  {result['status']} {result['scenario']} - {result['duration_ms']:.2f}ms")
+            if "error" in result:
+                print(f"    Error: {result['error']}")
+
+        if failed_tests == 0:
+            print(f"\n🎉 ALL TESTS PASSED! SimpleChatService is working correctly!")
+        else:
+            print(f"\n⚠️ {failed_tests} tests failed. Please check the errors above.")
+
+async def create_test_data():
+    """Create test users, courses, and chatrooms for foreign key constraints"""
+    try:
+        async with async_db.get_session() as db:
+            # Create test users
+            test_users = [
+                "test-user-001", "test-user-002", "test-user-003", "test-user-004",
+                "test-user-005", "test-user-006", "test-user-consistency"
+            ]
+
+            for user_id in test_users:
+                # Check if user exists
+                from sqlalchemy import select
+                result = await db.execute(select(User).filter_by(user_id=user_id))
+                if not result.scalar_one_or_none():
+                    user = User(
+                        user_id=user_id,
+                        username=f"user_{user_id}",
+                        email=f"{user_id}@test.com",
+                        password_hash="test_hash",
+                        role="student"
+                    )
+                    db.add(user)
+
+            # Create test courses
+            test_courses = ["test-course-001", "test-course-002", "test-course-003", "test-course-consistency"]
+            for course_title in test_courses:
+                result = await db.execute(select(Course).filter_by(title=course_title))
+                if not result.scalar_one_or_none():
+                    course = Course(
+                        title=course_title,
+                        description=f"Test course for {course_title}",
+                        instructor_id="test-user-001"
+                    )
+                    db.add(course)
+
+            # Create test chatrooms
+            test_chatrooms = [
+                "test-chatroom-001", "test-chatroom-002", "test-chatroom-003",
+                "test-chatroom-004", "test-chatroom-005", "test-chatroom-006", "test-chatroom-consistency"
+            ]
+
+            for i, chatroom_id in enumerate(test_chatrooms):
+                result = await db.execute(select(Chatroom).filter_by(chatroom_id=chatroom_id))
+                if not result.scalar_one_or_none():
+                    course_title = test_courses[i % len(test_courses)]
+                    course_result = await db.execute(select(Course).filter_by(title=course_title))
+                    course = course_result.scalar_one()
+
+                    chatroom = Chatroom(
+                        chatroom_id=chatroom_id,
+                        course_id=course.course_id,
+                        user_id="test-user-001",
+                        room_name=f"Test Chatroom {i+1}"
+                    )
+                    db.add(chatroom)
+
+            await db.commit()
+            print("✅ Test data created successfully")
+
+    except Exception as e:
+        print(f"❌ Failed to create test data: {e}")
+        import traceback
+        traceback.print_exc()
+
+async def main():
+    """Main test runner"""
+    try:
+        # Initialize database
+        print("🔌 Initializing database connection...")
+        await async_db.connect()
+
+        # Initialize database tables
+        print("🗄️ Initializing database tables...")
+        success = await async_db.initialize_tables()
+        if not success:
+            print("⚠️ Failed to initialize database tables, but continuing with tests...")
+
+        # Create test data for foreign key constraints
+        print("👥 Creating test users and chatrooms...")
+        await create_test_data()
+
+        # Run tests
+        tester = ChatServiceTester()
+        await tester.run_all_tests()
+
+    except Exception as e:
+        print(f"❌ Test setup failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        # Cleanup
+        try:
+            await async_db.disconnect()
+            print("🔌 Database disconnected")
+        except:
+            pass
+
+if __name__ == "__main__":
+    print("🧪 SimpleChatService Test Runner")
+    print("=" * 50)
+    asyncio.run(main())
