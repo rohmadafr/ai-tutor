@@ -625,16 +625,38 @@ class SimpleChatService:
             general_response = rag_response["response"]
             model_used = rag_response["model_used"]
 
-            # Step 2: Cache storage handled automatically by custom_cache_service
-            # (when we call the cache service for response)
+            # Step 2: Store general response in cache for future use
+            if general_response.strip():
+                try:
+                    embedding = await self.cache_service.generate_embedding(query)
+                    await self.cache_service.store_response(
+                        prompt=query,
+                        response=general_response,
+                        embedding=embedding,
+                        user_id=user_id or "anonymous",
+                        model=model_used,
+                        course_id=course_id
+                    )
+                    chat_logger.info(f"General response cached for user={user_id}, course={course_id}")
+                except Exception as cache_error:
+                    chat_logger.warning(f"Failed to cache general response: {cache_error}")
 
             # Step 3: Handle personalization if requested
             if use_personalization:
-                personalized_result = await self._personalize_response(
-                    general_response, user_id, chatroom_id, course_id, query
+                # Get user context for personalization
+                user_context_text, history_text = await self._get_context_components(
+                    chatroom_id, user_id, course_id
                 )
-                final_response = personalized_result["response"]
-                final_model = personalized_result["model_used"]
+
+                if user_context_text or history_text:
+                    personalized_result = await self.new_rag_service._personalize_response(
+                        general_response, user_context_text, history_text, query
+                    )
+                    final_response = personalized_result["response"]
+                    final_model = personalized_result["model_used"]
+                else:
+                    final_response = general_response
+                    final_model = model_used
             else:
                 final_response = general_response
                 final_model = model_used

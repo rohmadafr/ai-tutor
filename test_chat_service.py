@@ -73,6 +73,21 @@ class ChatServiceTester:
         """Test 1: Cache hit + raw response (non-streaming)"""
         query = "Apa itu machine learning?"
 
+        # First call - should be cache miss
+        first_result = await self.chat_service.chat_with_database(
+            query=query,
+            user_id="test-user-001",
+            course_id="test-course-001",
+            chatroom_id="test-chatroom-001",
+            use_personalization=False
+        )
+
+        # Validate first call is cache miss
+        assert isinstance(first_result, dict), "First result harus berupa dict"
+        assert first_result["source"] == "rag", f"First call should be rag, got {first_result.get('source')}"
+        assert first_result["cached"] == False, "First call harus cached=False"
+
+        # Second call with same query - should be cache hit
         result = await self.chat_service.chat_with_database(
             query=query,
             user_id="test-user-001",
@@ -81,7 +96,7 @@ class ChatServiceTester:
             use_personalization=False
         )
 
-        # Validate expected structure
+        # Validate expected structure for cache hit
         assert isinstance(result, dict), "Result harus berupa dict"
         assert "response" in result, "Harus ada 'response' field"
         assert result["source"] == "cache_raw", f"Expected cache_raw, got {result.get('source')}"
@@ -96,6 +111,8 @@ class ChatServiceTester:
         """Test 2: Cache hit + personalized response (non-streaming)"""
         query = "Apa itu machine learning?"
 
+        # First call - should be cache miss (reuse cache from test 1)
+        # Since test 1 already cached this query, this should be cache hit
         result = await self.chat_service.chat_with_database(
             query=query,
             user_id="test-user-002",
@@ -107,6 +124,7 @@ class ChatServiceTester:
         # Validate expected structure
         assert isinstance(result, dict), "Result harus berupa dict"
         assert "response" in result, "Harus ada 'response' field"
+        # Should be cache_personalized since we're using personalization on cached result
         assert result["source"] == "cache_personalized", f"Expected cache_personalized, got {result.get('source')}"
         assert result["cached"] == True, "Harus cached=True"
         assert result["personalized"] == True, "Harus personalized=True"
@@ -323,36 +341,43 @@ async def create_test_data():
                     )
                     db.add(user)
 
-            # Create test courses
-            test_courses = ["test-course-001", "test-course-002", "test-course-003", "test-course-consistency"]
-            for course_title in test_courses:
-                result = await db.execute(select(Course).filter_by(title=course_title))
+            # Create test courses with explicit course_id
+            test_courses = [
+                ("test-course-001", "Machine Learning Fundamentals"),
+                ("test-course-002", "Advanced AI Topics"),
+                ("test-course-003", "Deep Learning"),
+                ("test-course-consistency", "Consistency Test Course")
+            ]
+            for course_id, course_title in test_courses:
+                result = await db.execute(select(Course).filter_by(course_id=course_id))
                 if not result.scalar_one_or_none():
                     course = Course(
+                        course_id=course_id,
                         title=course_title,
-                        description=f"Test course for {course_title}",
+                        description=f"Test course: {course_title}",
                         instructor_id="test-user-001"
                     )
                     db.add(course)
 
             # Create test chatrooms
-            test_chatrooms = [
-                "test-chatroom-001", "test-chatroom-002", "test-chatroom-003",
-                "test-chatroom-004", "test-chatroom-005", "test-chatroom-006", "test-chatroom-consistency"
+            test_chatrooms_data = [
+                ("test-chatroom-001", "test-course-001", "Test Chatroom 1"),
+                ("test-chatroom-002", "test-course-001", "Test Chatroom 2"),
+                ("test-chatroom-003", "test-course-002", "Test Chatroom 3"),
+                ("test-chatroom-004", "test-course-001", "Test Chatroom 4"),
+                ("test-chatroom-005", "test-course-001", "Test Chatroom 5"),
+                ("test-chatroom-006", "test-course-003", "Test Chatroom 6"),
+                ("test-chatroom-consistency", "test-course-consistency", "Test Chatroom Consistency")
             ]
 
-            for i, chatroom_id in enumerate(test_chatrooms):
+            for chatroom_id, course_id, room_name in test_chatrooms_data:
                 result = await db.execute(select(Chatroom).filter_by(chatroom_id=chatroom_id))
                 if not result.scalar_one_or_none():
-                    course_title = test_courses[i % len(test_courses)]
-                    course_result = await db.execute(select(Course).filter_by(title=course_title))
-                    course = course_result.scalar_one()
-
                     chatroom = Chatroom(
                         chatroom_id=chatroom_id,
-                        course_id=course.course_id,
+                        course_id=course_id,
                         user_id="test-user-001",
-                        room_name=f"Test Chatroom {i+1}"
+                        room_name=room_name
                     )
                     db.add(chatroom)
 
