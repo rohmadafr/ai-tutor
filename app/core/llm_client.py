@@ -25,7 +25,7 @@ class LLMClient:
         # Flexible model configuration for different use cases
         self.models = {
             "comprehensive": settings.openai_model_comprehensive or "gpt-4o-mini",  # Default comprehensive model
-            "personalization": settings.openai_model_personalized or "gpt-4o-nano",  # For response personalization
+            "personalization": settings.openai_model_personalized or "gpt-4o-mini",  # For response personalization
         }
 
         # Support for custom model overrides via settings

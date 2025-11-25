@@ -1012,7 +1012,7 @@ class RAGService():
 
             # Step 4: Handle personalization if needed
             final_response = response_text
-            model_used = "gpt-4o-nano"
+            model_used = settings.openai_model_comprehensive  # Use comprehensive model for RAG
             input_tokens = 0
             output_tokens = 0
             cost_usd = 0.0
@@ -1140,12 +1140,12 @@ class RAGService():
                 | self.output_parser
             )
 
-            # Generate personalized response using GPT-4o-nano
+            # Generate personalized response using personalization model
             personalized_response = await personalization_chain.ainvoke({})
 
             return {
                 "response": personalized_response,
-                "model_used": "gpt-4o-nano"
+                "model_used": settings.openai_model_personalized
             }
 
         except Exception as e:

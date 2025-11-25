@@ -381,17 +381,47 @@ async def create_test_data():
                     )
                     db.add(chatroom)
 
+            # Create user contexts for personalization tests
+            from app.schemas.db_models import UserContext
+
+            user_contexts_data = [
+                ("test-user-002", "test-course-001", "Student prefers detailed explanations with examples. Learning style: visual learner."),
+                ("test-user-005", "test-course-001", "Advanced student who likes concise technical explanations."),
+                ("test-user-consistency", "test-course-consistency", "Beginner student who needs step-by-step guidance.")
+            ]
+
+            for user_id, course_id, context_text in user_contexts_data:
+                await UserContext.aget_or_create(db, user_id, course_id, context_text)
+
             await db.commit()
-            print("✅ Test data created successfully")
+            print("✅ Test data created successfully (including user contexts)")
 
     except Exception as e:
         print(f"❌ Failed to create test data: {e}")
         import traceback
         traceback.print_exc()
 
+async def clear_redis_cache():
+    """Clear Redis cache before tests to ensure clean slate"""
+    try:
+        import redis.asyncio as redis
+        from app.config.settings import settings
+
+        # Connect to cache Redis (port 6380)
+        cache_client = redis.from_url(settings.redis_cache_url)
+        await cache_client.flushdb()
+        await cache_client.close()
+        print("🧹 Redis cache cleared successfully")
+    except Exception as e:
+        print(f"⚠️ Failed to clear Redis cache: {e}")
+
 async def main():
     """Main test runner"""
     try:
+        # Clear Redis cache first
+        print("🧹 Clearing Redis cache...")
+        await clear_redis_cache()
+
         # Initialize database
         print("🔌 Initializing database connection...")
         await async_db.connect()
