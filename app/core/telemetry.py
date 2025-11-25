@@ -47,6 +47,9 @@ class TokenCounter:
             "gpt-4o-mini": {"input": 0.150, "output": 0.600},
             "gpt-4o-mini-2024-07-18": {"input": 0.150, "output": 0.600},
 
+            # GPT-4.1 models (hypothetical pricing - adjust as needed)
+            "gpt-4.1-nano": {"input": 0.100, "output": 0.400},  # Estimated pricing
+
             # GPT-4 models
             "gpt-4-turbo": {"input": 10.00, "output": 30.00},
             "gpt-4-turbo-2024-04-09": {"input": 10.00, "output": 30.00},

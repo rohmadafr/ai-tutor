@@ -87,6 +87,52 @@ class UnifiedRAGService:
 
         rag_logger.info("UnifiedRAGService initialized with embedded Vector Store")
 
+    def _extract_usage_metadata(self, llm_response) -> Dict[str, int]:
+        """
+        Extract token usage from LangChain AIMessage response.
+
+        Supports both old and new LangChain versions:
+        - New: response.usage_metadata
+        - Old: response.response_metadata['token_usage']
+
+        Returns:
+            Dict with input_tokens, output_tokens, total_tokens
+        """
+        try:
+            # Try new format first (LangChain >= 0.1.0)
+            if hasattr(llm_response, 'usage_metadata') and llm_response.usage_metadata:
+                usage = llm_response.usage_metadata
+                return {
+                    "input_tokens": usage.get('input_tokens', 0),
+                    "output_tokens": usage.get('output_tokens', 0),
+                    "total_tokens": usage.get('total_tokens', 0)
+                }
+
+            # Try old format (LangChain < 0.1.0)
+            if hasattr(llm_response, 'response_metadata'):
+                token_usage = llm_response.response_metadata.get('token_usage', {})
+                return {
+                    "input_tokens": token_usage.get('prompt_tokens', 0),
+                    "output_tokens": token_usage.get('completion_tokens', 0),
+                    "total_tokens": token_usage.get('total_tokens', 0)
+                }
+
+            # Fallback: estimate tokens using TokenCounter
+            rag_logger.warning("No usage metadata found in LLM response, estimating tokens")
+            if hasattr(llm_response, 'content'):
+                output_tokens = self.token_counter.count_tokens(llm_response.content)
+                return {
+                    "input_tokens": 0,  # Can't estimate without prompt
+                    "output_tokens": output_tokens,
+                    "total_tokens": output_tokens
+                }
+
+        except Exception as e:
+            rag_logger.error(f"Failed to extract usage metadata: {e}")
+
+        # Default fallback
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
     def _define_index_schema(self) -> IndexSchema:
         """Define RedisVL index schema for knowledge base"""
         schema_definition = {
