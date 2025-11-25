@@ -267,7 +267,7 @@ class SimpleChatService:
                     chatroom_id=chatroom_id or "default",
                     user_id=user_id or "anonymous",
                     response_text=response_data["response"],
-                    model_used=response_data.get("model_used", "gpt-4o-mini"),
+                    model_used=response_data.get("model_used", settings.openai_model_comprehensive),
                     response_type=response_data.get("response_type", "rag_response"),
                     source_type=response_data.get("source_type", "knowledge_base"),
                     response_time_ms=response_data.get("response_time_ms", 0.0),
@@ -341,7 +341,7 @@ class SimpleChatService:
                             "user_id": user_id,
                             "course_id": course_id,
                             "chatroom_id": chatroom_id,
-                            "model_used": "gpt-4o-mini",  # From RAGService._personalize_response_stream
+                            "model_used": settings.openai_model_personalized,  # Personalization model (gpt-4.1-nano)
                             "response_type": "cache_hit_personalized",
                             "source_type": "redis_cache",
                             "response_time_ms": personalization_time_ms,
@@ -423,7 +423,7 @@ class SimpleChatService:
                 "user_id": user_id,
                 "course_id": course_id,
                 "chatroom_id": chatroom_id,
-                "model_used": "gpt-4o-mini",  # RAGService default model
+                "model_used": settings.openai_model_personalized if use_personalization else settings.openai_model_comprehensive,
                 "response_type": "rag_response",
                 "source_type": "knowledge_base",
                 "response_time_ms": rag_time_ms

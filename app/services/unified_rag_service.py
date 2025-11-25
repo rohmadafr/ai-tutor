@@ -1125,8 +1125,16 @@ class RAGService():
         history: str,
         original_query: str
     ) -> Dict[str, Any]:
-        """Personalize response using LangChain LCEL"""
+        """Personalize response using personalization model (gpt-4.1-nano)"""
         try:
+            # Use personalization model specifically (gpt-4.1-nano from settings)
+            from langchain_openai import ChatOpenAI
+            personalization_llm = ChatOpenAI(
+                model=settings.openai_model_personalized,
+                temperature=settings.openai_temperature,
+                openai_api_key=settings.openai_api_key
+            )
+
             # Build personalization chain
             personalization_chain = (
                 RunnableParallel({
@@ -1136,7 +1144,7 @@ class RAGService():
                     "history": lambda _: history
                 })
                 | self.personalization_prompt
-                | self.llm_client.async_client
+                | personalization_llm
                 | self.output_parser
             )
 
@@ -1152,7 +1160,7 @@ class RAGService():
             self.rag_logger.error(f"Personalization failed: {e}")
             return {
                 "response": base_response,  # Fallback
-                "model_used": "gpt-4o-mini"
+                "model_used": settings.openai_model_comprehensive
             }
 
     async def store_in_database(
