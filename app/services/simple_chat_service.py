@@ -166,7 +166,7 @@ class SimpleChatService:
     #             "course_id": course_id,
     #             "context_quality": rag_response.get("context_quality", "unknown"),
     #             "rag_threshold": rag_response.get("rag_threshold", settings.rag_distance_threshold),
-    #             "response_time_ms": rag_response.get("response_time_ms", 0),
+    #             "latency_ms": rag_response.get("latency_ms", 0),
     #             "method": "lcel_rag"
     #         }
 
@@ -270,7 +270,7 @@ class SimpleChatService:
                     model_used=response_data.get("model_used", settings.openai_model_comprehensive),
                     response_type=response_data.get("response_type", "rag_response"),
                     source_type=response_data.get("source_type", "knowledge_base"),
-                    response_time_ms=response_data.get("response_time_ms", 0.0),
+                    latency_ms=response_data.get("latency_ms", 0.0),
                     input_tokens=response_data.get("input_tokens", 0),
                     output_tokens=response_data.get("output_tokens", 0),
                     cost_usd=response_data.get("cost_usd", 0.0),
@@ -344,7 +344,7 @@ class SimpleChatService:
                             "model_used": settings.openai_model_personalized,  # Personalization model (gpt-4.1-nano)
                             "response_type": "cache_hit_personalized",
                             "source_type": "redis_cache",
-                            "response_time_ms": personalization_time_ms,
+                            "latency_ms": personalization_time_ms,
                             "cache_similarity_score": None
                         }
 
@@ -362,7 +362,7 @@ class SimpleChatService:
                             "model_used": "cached",
                             "response_type": "cache_hit_raw",
                             "source_type": "redis_cache",
-                            "response_time_ms": cache_query_time_ms
+                            "latency_ms": cache_query_time_ms
                         }
 
                         # Track cache hit interaction
@@ -383,7 +383,7 @@ class SimpleChatService:
                         "model_used": "cached",
                         "response_type": "cache_hit_raw",
                         "source_type": "redis_cache",
-                        "response_time_ms": cache_query_time_ms
+                        "latency_ms": cache_query_time_ms
                     }
 
                     # Track cache hit interaction
@@ -426,7 +426,7 @@ class SimpleChatService:
                 "model_used": settings.openai_model_personalized if use_personalization else settings.openai_model_comprehensive,
                 "response_type": "rag_response",
                 "source_type": "knowledge_base",
-                "response_time_ms": rag_time_ms
+                "latency_ms": rag_time_ms
             }
 
             await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id)
@@ -535,7 +535,7 @@ class SimpleChatService:
                             "model_used": personalized_result.get("model_used"),
                             "response_type": "cache_hit_personalized",
                             "source_type": "redis_cache",
-                            "response_time_ms": personalization_time_ms,
+                            "latency_ms": personalization_time_ms,
                             "cache_similarity_score": None  # Cache hit tidak ada similarity score
                         }
 
@@ -572,7 +572,7 @@ class SimpleChatService:
                         "model_used": "cached",
                         "response_type": "cache_hit_raw",
                         "source_type": "redis_cache",
-                        "response_time_ms": cache_query_time_ms
+                        "latency_ms": cache_query_time_ms
                     }
 
                     # Track cache hit interaction
@@ -673,7 +673,7 @@ class SimpleChatService:
                 "response_type": "rag_response",
                 "source_type": "knowledge_base",
                 "source_documents": rag_response.get("source_documents", []),
-                "response_time_ms": rag_response.get("response_time_ms", 0)
+                "latency_ms": rag_response.get("latency_ms", 0)
             }
 
             # Track interaction in database

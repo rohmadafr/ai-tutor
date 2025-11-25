@@ -392,14 +392,14 @@ class Summary(Base):
 
         if not self.content or not isinstance(self.content, dict):
             expiration_date = self.created_at.replace(tzinfo=None) + datetime.timedelta(hours=168)
-            return datetime.datetime.utcnow() > expiration_date
+            return datetime.datetime.now(datetime.UTC) > expiration_date
 
         metadata = self.content.get("metadata", {})
         custom_ttl = metadata.get("cache_ttl_hours", 168)
         custom_ttl = min(custom_ttl, 720)
 
         expiration_date = self.created_at.replace(tzinfo=None) + datetime.timedelta(hours=custom_ttl)
-        return datetime.datetime.utcnow() > expiration_date
+        return datetime.datetime.now(datetime.UTC) > expiration_date
 
     def extend_ttl(self, db: Session, additional_hours: int = 168):
         """Extend TTL for this summary by updating metadata."""
@@ -411,7 +411,7 @@ class Summary(Base):
             self.content["metadata"] = {}
 
         self.content["metadata"]["cache_ttl_hours"] = min(additional_hours, 720)
-        self.content["metadata"]["extended_at"] = datetime.datetime.utcnow().isoformat()
+        self.content["metadata"]["extended_at"] = datetime.datetime.now(datetime.UTC).isoformat()
 
         db.commit()
         db.refresh(self)
@@ -482,7 +482,7 @@ class RequestTracking(Base):
             course_id=course_id,
             file_hashes=material_ids or [],
             parameters=parameters or {},
-            created_at=datetime.datetime.utcnow()
+            created_at=datetime.datetime.now(datetime.UTC)
         )
         db.add(tracking)
         await db.flush()
@@ -512,7 +512,7 @@ class RequestTracking(Base):
             course_id=course_id,
             file_hashes=material_ids or [],
             parameters=parameters or {},
-            created_at=datetime.datetime.utcnow()
+            created_at=datetime.datetime.now(datetime.UTC)
         )
         db.add(tracking)
         db.commit()
@@ -522,13 +522,13 @@ class RequestTracking(Base):
     def start_processing(self, db: Session):
         """Mark request as processing."""
         self.status = "processing"
-        self.started_at = datetime.datetime.utcnow()
+        self.started_at = datetime.datetime.now(datetime.UTC)
         db.commit()
 
     def complete(self, db: Session, result_count: int = 0, tokens_used: int = 0, request_metadata: dict = None):
         """Mark request as completed."""
         self.status = "completed"
-        self.completed_at = datetime.datetime.utcnow()
+        self.completed_at = datetime.datetime.now(datetime.UTC)
         self.result_count = result_count
         self.tokens_used = tokens_used
         if request_metadata:
@@ -538,7 +538,7 @@ class RequestTracking(Base):
     def fail(self, db: Session, error_message: str):
         """Mark request as failed."""
         self.status = "failed"
-        self.completed_at = datetime.datetime.utcnow()
+        self.completed_at = datetime.datetime.now(datetime.UTC)
         self.error_message = error_message
         db.commit()
 
@@ -636,14 +636,14 @@ class QuestionGeneration(Base):
     def complete(self, db: Session, tokens_used: int):
         """Mark generation as completed."""
         self.status = "completed"
-        self.completed_at = datetime.datetime.utcnow()
+        self.completed_at = datetime.datetime.now(datetime.UTC)
         self.tokens_used = tokens_used
         db.commit()
 
     def fail(self, db: Session, error_message: str):
         """Mark generation as failed."""
         self.status = "failed"
-        self.completed_at = datetime.datetime.utcnow()
+        self.completed_at = datetime.datetime.now(datetime.UTC)
         self.error_message = error_message
         db.commit()
 
@@ -884,8 +884,8 @@ class Chatroom(Base):
 
     def update_activity(self, db: Session):
         """Update last activity timestamp."""
-        self.last_activity_at = datetime.datetime.utcnow()
-        self.updated_at = datetime.datetime.utcnow()
+        self.last_activity_at = datetime.datetime.now(datetime.UTC)
+        self.updated_at = datetime.datetime.now(datetime.UTC)
         db.commit()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1035,7 +1035,7 @@ class Response(Base):
     cost_usd = Column(Float, default=0.0, server_default=text("0.0"))
 
     # Performance metrics
-    response_time_ms = Column(Float, nullable=False)  # Total response time
+    latency_ms = Column(Float, nullable=False)  # Total response latency
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.datetime.utcnow, server_default=text("now()"))
@@ -1068,7 +1068,7 @@ class Response(Base):
         model_used: str,
         response_type: str,
         source_type: str,
-        response_time_ms: float,
+        latency_ms: float,
         input_tokens: int = 0,
         output_tokens: int = 0,
         cost_usd: float = 0.0,
@@ -1085,7 +1085,7 @@ class Response(Base):
             model_used=model_used,
             response_type=response_type,
             source_type=source_type,
-            response_time_ms=response_time_ms,
+            latency_ms=latency_ms,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=input_tokens + output_tokens,
@@ -1110,7 +1110,7 @@ class Response(Base):
         model_used: str,
         response_type: str,
         source_type: str,
-        response_time_ms: float,
+        latency_ms: float,
         input_tokens: int = 0,
         output_tokens: int = 0,
         cost_usd: float = 0.0,
@@ -1127,7 +1127,7 @@ class Response(Base):
             model_used=model_used,
             response_type=response_type,
             source_type=source_type,
-            response_time_ms=response_time_ms,
+            latency_ms=latency_ms,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=input_tokens + output_tokens,
@@ -1145,7 +1145,7 @@ class Response(Base):
         """Update user rating and feedback."""
         self.user_rating = rating
         self.user_feedback = feedback
-        self.updated_at = datetime.datetime.utcnow()
+        self.updated_at = datetime.datetime.now(datetime.UTC)
         db.commit()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1167,7 +1167,7 @@ class Response(Base):
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
             "cost_usd": self.cost_usd,
-            "response_time_ms": self.response_time_ms,
+            "latency_ms": self.latency_ms,
             "user_rating": self.user_rating,
             "user_feedback": self.user_feedback,
             "created_at": self.created_at.isoformat(),
@@ -1263,7 +1263,7 @@ class UserContext(Base):
     def update_context(self, db: Session, new_context: str):
         """Update user context."""
         self.user_context = new_context
-        self.updated_at = datetime.datetime.utcnow()
+        self.updated_at = datetime.datetime.now(datetime.UTC)
         db.commit()
 
     def get_context(self) -> str:
@@ -1350,11 +1350,11 @@ class CourseKnowledgeBase(Base):
         self.processed = True
         self.embedding_model = embedding_model
         self.chunk_count = chunk_count
-        self.updated_at = datetime.datetime.utcnow()
+        self.updated_at = datetime.datetime.now(datetime.UTC)
         db.commit()
 
     def record_access(self, db: Session):
         """Record material access."""
         self.access_count += 1
-        self.last_accessed_at = datetime.datetime.utcnow()
+        self.last_accessed_at = datetime.datetime.now(datetime.UTC)
         db.commit()

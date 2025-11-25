@@ -843,7 +843,7 @@ def format_context(docs: List[Document], threshold: float = None) -> str:
 #                     "context_used": False,
 #                     "context_quality": "none",
 #                     "rag_threshold": threshold,
-#                     "response_time_ms": (time.time() - start_time) * 1000,
+#                     "latency_ms": (time.time() - start_time) * 1000,
 #                     "method": "lcel_no_docs"
 #                 }
 
@@ -885,7 +885,7 @@ def format_context(docs: List[Document], threshold: float = None) -> str:
 #                 "context_used": True,
 #                 "context_quality": context_quality,
 #                 "rag_threshold": threshold,
-#                 "response_time_ms": response_time,
+#                 "latency_ms": response_time,
 #                 "method": "lcel"
 #             }
 
@@ -1070,7 +1070,7 @@ class RAGService():
                 final_response = personalization_result.get("response", response_text)
 
             # Step 5: Calculate metrics
-            response_time_ms = (time.time() - start_time) * 1000
+            latency_ms = (time.time() - start_time) * 1000
 
             return {
                 "response": final_response,
@@ -1081,7 +1081,7 @@ class RAGService():
                 "user_context_used": bool(user_context_text),
                 "history_used": bool(history_text),
                 "source_documents": rag_result.get("sources", []),
-                "response_time_ms": response_time_ms,
+                "latency_ms": latency_ms,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": input_tokens + output_tokens,
@@ -1230,7 +1230,7 @@ class RAGService():
                     model_used=response_data["model_used"],
                     response_type=response_data["response_type"],
                     source_type=response_data["source_type"],
-                    response_time_ms=response_data["response_time_ms"],
+                    latency_ms=response_data["latency_ms"],
                     input_tokens=response_data.get("input_tokens", 0),
                     output_tokens=response_data.get("output_tokens", 0),
                     cost_usd=response_data.get("cost_usd", 0.0),

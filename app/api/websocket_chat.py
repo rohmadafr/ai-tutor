@@ -202,7 +202,7 @@ async def handle_chat_request(user_id: str, course_id: Optional[str], message: D
                 "source": "cache",
                 "cached": True,
                 "sources": [],
-                "response_time_ms": round(response_time, 2),
+                "latency_ms": round(response_time, 2),
                 "context_quality": "cached",
                 "timestamp": time.time(),
                 "done": True
@@ -241,7 +241,7 @@ async def handle_chat_request(user_id: str, course_id: Optional[str], message: D
             "response": full_response,
             "source": "rag",
             "cached": False,
-            "response_time_ms": round(response_time, 2),
+            "latency_ms": round(response_time, 2),
             "timestamp": time.time(),
             "done": True
         })

@@ -51,7 +51,7 @@ class ChatServiceTester:
                 print(f"🔹 Cached: {result.get('cached', False)}")
                 print(f"🔹 Personalized: {result.get('personalized', False)}")
                 print(f"🔹 Model: {result.get('model_used', 'unknown')}")
-                print(f"🔹 Response Time: {result.get('response_time_ms', 0):.2f}ms")
+                print(f"🔹 Response Time: {result.get('latency_ms', 0):.2f}ms")
             else:
                 print(f"🔹 Response: {str(result)[:100]}...")
 
@@ -103,8 +103,8 @@ class ChatServiceTester:
         assert result["source"] == "cache_raw", f"Expected cache_raw, got {result.get('source')}"
         assert result["cached"] == True, "Harus cached=True"
         assert result["personalized"] == False, "Harus personalized=False"
-        assert "response_time_ms" in result, "Harus ada response_time_ms"
-        assert isinstance(result["response_time_ms"], (int, float)), "response_time_ms harus number"
+        assert "latency_ms" in result, "Harus ada latency_ms"
+        assert isinstance(result["latency_ms"], (int, float)), "latency_ms harus number"
 
         return result
 
@@ -130,7 +130,7 @@ class ChatServiceTester:
         assert result["cached"] == True, "Harus cached=True"
         assert result["personalized"] == True, "Harus personalized=True"
         assert "model_used" in result, "Harus ada model_used"
-        assert "response_time_ms" in result, "Harus ada response_time_ms"
+        assert "latency_ms" in result, "Harus ada latency_ms"
 
         return result
 
@@ -152,7 +152,7 @@ class ChatServiceTester:
         assert result["source"] == "rag", f"Expected rag, got {result.get('source')}"
         assert result["cached"] == False, "Harus cached=False"
         assert result["personalized"] == False, "Harus personalized=False"
-        assert "response_time_ms" in result, "Harus ada response_time_ms"
+        assert "latency_ms" in result, "Harus ada latency_ms"
         assert result["model_used"] == "gpt-4o-mini", f"Expected gpt-4o-mini, got {result.get('model_used')}"
 
         return result
@@ -396,7 +396,7 @@ async def create_test_data():
                 user_context = await UserContext.aget_or_create(db, user_id, course_id, context_text)
                 if user_context.user_context != context_text:
                     user_context.user_context = context_text
-                    user_context.updated_at = datetime.datetime.utcnow()
+                    user_context.updated_at = datetime.datetime.now(datetime.UTC)
                     db.add(user_context)
 
             await db.commit()
