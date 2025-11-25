@@ -13,6 +13,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
+from langchain_community.callbacks import get_openai_callback
 
 # RedisVL imports
 try:
@@ -340,15 +341,30 @@ class UnifiedRAGService:
 
             context = "\n\n".join(context_parts)
 
-            # Generate response using LLM
+            # Generate response using LLM with token tracking
+            input_tokens = 0
+            output_tokens = 0
+            total_tokens = 0
+            cost_usd = 0.0
+
             if context.strip():
-                # Use RAG prompt
+                # Use RAG prompt with callback for token tracking
                 prompt_messages = self.prompt.format_messages(
                     context=context,
                     question=question
                 )
-                llm_response = await self.llm.ainvoke(prompt_messages)
-                answer = llm_response.content
+
+                with get_openai_callback() as cb:
+                    llm_response = await self.llm.ainvoke(prompt_messages)
+                    answer = llm_response.content
+
+                    # Extract token usage from callback
+                    input_tokens = cb.prompt_tokens
+                    output_tokens = cb.completion_tokens
+                    total_tokens = cb.total_tokens
+                    cost_usd = cb.total_cost
+
+                    rag_logger.info(f"UnifiedRAGService.query tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
             else:
                 # No context found
                 answer = "Saya tidak memiliki informasi yang cukup untuk menjawab pertanyaan ini."
@@ -357,7 +373,11 @@ class UnifiedRAGService:
                 "answer": answer,
                 "sources": sources,
                 "course_id": course_id,
-                "context_used": bool(context.strip())
+                "context_used": bool(context.strip()),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "cost_usd": cost_usd
             }
 
         except Exception as e:
@@ -1053,21 +1073,38 @@ class RAGService():
                 | self.output_parser
             )
 
-            # Step 3: Generate response
-            response_text = await rag_chain.ainvoke(question)
+            # Step 3: Generate response with token tracking
+            input_tokens = 0
+            output_tokens = 0
+            cost_usd = 0.0
+
+            with get_openai_callback() as cb:
+                response_text = await rag_chain.ainvoke(question)
+
+                # Extract token usage from callback
+                input_tokens = cb.prompt_tokens
+                output_tokens = cb.completion_tokens
+                cost_usd = cb.total_cost
+
+                rag_logger.info(f"RAGService.generate_response tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
 
             # Step 4: Handle personalization if needed
             final_response = response_text
             model_used = settings.openai_model_comprehensive  # Use comprehensive model for RAG
-            input_tokens = 0
-            output_tokens = 0
-            cost_usd = 0.0
+            personalization_tokens = {"input": 0, "output": 0, "cost": 0.0}
 
             if use_personalization:
                 personalization_result = await self._personalize_response(
                     response_text, user_context_text, history_text, question
                 )
                 final_response = personalization_result.get("response", response_text)
+                model_used = personalization_result.get("model_used", model_used)
+
+                # Add personalization tokens
+                personalization_tokens = personalization_result.get("tokens", {"input": 0, "output": 0, "cost": 0.0})
+                input_tokens += personalization_tokens.get("input", 0)
+                output_tokens += personalization_tokens.get("output", 0)
+                cost_usd += personalization_tokens.get("cost", 0.0)
 
             # Step 5: Calculate metrics
             latency_ms = (time.time() - start_time) * 1000
@@ -1154,10 +1191,14 @@ class RAGService():
                 | self.output_parser
             )
 
-            # Stream personalized response
-            async for chunk in personalization_chain.astream({}):
-                if chunk:
-                    yield chunk
+            # Stream personalized response with token tracking
+            with get_openai_callback() as cb:
+                async for chunk in personalization_chain.astream({}):
+                    if chunk:
+                        yield chunk
+
+                # Log token usage after streaming completes
+                rag_logger.info(f"RAGService._personalize_response_stream tokens: input={cb.prompt_tokens}, output={cb.completion_tokens}, cost=${cb.total_cost:.6f}")
 
         except Exception as e:
             self.rag_logger.error(f"Streaming personalization failed: {e}")
@@ -1194,12 +1235,24 @@ class RAGService():
                 | self.output_parser
             )
 
-            # Generate personalized response using personalization model
-            personalized_response = await personalization_chain.ainvoke({})
+            # Generate personalized response with token tracking
+            with get_openai_callback() as cb:
+                personalized_response = await personalization_chain.ainvoke({})
+
+                # Extract token usage from callback
+                tokens = {
+                    "input": cb.prompt_tokens,
+                    "output": cb.completion_tokens,
+                    "total": cb.total_tokens,
+                    "cost": cb.total_cost
+                }
+
+                rag_logger.info(f"RAGService._personalize_response tokens: input={tokens['input']}, output={tokens['output']}, cost=${tokens['cost']:.6f}")
 
             return {
                 "response": personalized_response,
-                "model_used": settings.openai_model_personalized
+                "model_used": settings.openai_model_personalized,
+                "tokens": tokens
             }
 
         except Exception as e:
@@ -1280,12 +1333,16 @@ class RAGService():
                 | self.output_parser
             )
 
-            # Step 3: Stream RAG response
+            # Step 3: Stream RAG response with token tracking
             full_response = ""
-            async for chunk in rag_streaming_chain.astream(question):
-                if chunk:
-                    full_response += chunk
-                    yield chunk
+            with get_openai_callback() as cb:
+                async for chunk in rag_streaming_chain.astream(question):
+                    if chunk:
+                        full_response += chunk
+                        yield chunk
+
+                # Log token usage after streaming completes
+                rag_logger.info(f"RAGService.stream RAG tokens: input={cb.prompt_tokens}, output={cb.completion_tokens}, cost=${cb.total_cost:.6f}")
 
             # Step 4: Handle personalization if requested
             if use_personalization:
@@ -1294,7 +1351,7 @@ class RAGService():
                 )
 
                 if user_context_text or history_text:
-                    # Use dedicated streaming personalization method with GPT-4o-nano
+                    # Use dedicated streaming personalization method with token tracking
                     async for chunk in self._personalize_response_stream(
                         full_response, user_context_text, history_text, question
                     ):
