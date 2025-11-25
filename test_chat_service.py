@@ -7,6 +7,7 @@ import asyncio
 import time
 import sys
 import os
+import datetime
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -391,7 +392,12 @@ async def create_test_data():
             ]
 
             for user_id, course_id, context_text in user_contexts_data:
-                await UserContext.aget_or_create(db, user_id, course_id, context_text)
+                # Get or create, then update to ensure fresh data
+                user_context = await UserContext.aget_or_create(db, user_id, course_id, context_text)
+                if user_context.user_context != context_text:
+                    user_context.user_context = context_text
+                    user_context.updated_at = datetime.datetime.utcnow()
+                    db.add(user_context)
 
             await db.commit()
             print("✅ Test data created successfully (including user contexts)")
