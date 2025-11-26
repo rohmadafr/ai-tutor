@@ -6,6 +6,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from app.config.settings import settings
@@ -22,6 +23,9 @@ from app.api.users import router as users_router
 from app.api.user_contexts import router as user_contexts_router
 from app.core.exceptions import TutorServiceException
 from app.services.simple_chat_service import SimpleChatService
+
+from test_chat_service import main as run_chat_tests
+
 
 # Global service instance
 _simple_chat_service: SimpleChatService = None
@@ -90,6 +94,18 @@ app.include_router(seeder_router)
 app.include_router(courses_router)
 app.include_router(users_router)
 app.include_router(user_contexts_router)
+
+app.mount("/test", StaticFiles(directory="static"), name="static")
+
+@app.get("/run-tests")
+async def run_tests():
+    """Menjalankan semua test ChatServiceTester"""
+    try:
+        # Jalankan test runner
+        await run_chat_tests()
+        return {"status": "ok", "message": "All tests executed. Check server logs for details."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @app.exception_handler(TutorServiceException)

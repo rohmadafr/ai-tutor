@@ -364,7 +364,7 @@
         async function loadTemplates() {
             try {
                 log('🔄 Loading learning profile templates...');
-                const response = await fetch('http://127.0.0.1:8000/user-contexts/templates');
+                const response = await fetch('http://10.101.20.220:8000/user-contexts/templates');
                 templates = await response.json();
 
                 // Populate template dropdown
@@ -389,7 +389,7 @@
 
             try {
                 log(`🔄 Loading learning profiles for user ${currentUserId}...`);
-                const response = await fetch(`http://127.0.0.1:8000/user-contexts/?user_id=${currentUserId}&course_id=${currentCourseId}`);
+                const response = await fetch(`http://10.101.20.220:8000/user-contexts/?user_id=${currentUserId}&course_id=${currentCourseId}`);
                 const data = await response.json();
                 userContexts = data;
 
@@ -482,7 +482,7 @@ Informasi tambahan: ${additional || 'Tidak ada'}`;
             if (!currentUserContextId) return;
 
             try {
-                const response = await fetch(`http://127.0.0.1:8000/user-contexts/${currentUserContextId}`);
+                const response = await fetch(`http://10.101.20.220:8000/user-contexts/${currentUserContextId}`);
                 const context = await response.json();
 
                 // Parse and populate form fields
@@ -526,7 +526,7 @@ Informasi tambahan: ${additional}`;
             try {
                 if (currentUserContextId) {
                     // Update existing context
-                    const response = await fetch(`http://127.0.0.1:8000/user-contexts/${currentUserContextId}`, {
+                    const response = await fetch(`http://10.101.20.220:8000/user-contexts/${currentUserContextId}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ user_context: contextText })
@@ -537,7 +537,7 @@ Informasi tambahan: ${additional}`;
                     }
                 } else {
                     // Create new context
-                    const response = await fetch('http://127.0.0.1:8000/user-contexts/', {
+                    const response = await fetch('http://10.101.20.220:8000/user-contexts/', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -590,7 +590,7 @@ Informasi tambahan: ${additional}`;
         async function loadUsers() {
             try {
                 log('🔄 Loading users...');
-                const response = await fetch('http://127.0.0.1:8000/users/');
+                const response = await fetch('http://10.101.20.220:8000/users/');
                 const data = await response.json();
                 users = data.users;
 
@@ -613,7 +613,7 @@ Informasi tambahan: ${additional}`;
         async function loadCourses() {
             try {
                 log('🔄 Loading courses...');
-                const response = await fetch('http://127.0.0.1:8000/courses/');
+                const response = await fetch('http://10.101.20.220:8000/courses/');
                 const data = await response.json();
                 courses = data.courses;
 
@@ -681,7 +681,7 @@ Informasi tambahan: ${additional}`;
             try {
                 log('🔄 Creating chatroom...', 'info');
 
-                const response = await fetch('http://127.0.0.1:8000/chatrooms/', {
+                const response = await fetch('http://10.101.20.220:8000/chatrooms/', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -726,7 +726,7 @@ Informasi tambahan: ${additional}`;
             updateStatus('connecting', 'Connecting to WebSocket...');
             log('🔄 Connecting to WebSocket...', 'info');
 
-            const wsUrl = 'ws://127.0.0.1:8000/ws/stream';
+            const wsUrl = 'ws://10.101.20.220:8000/ws/stream';
             const url = new URL(wsUrl);
             url.searchParams.set('user_id', currentUserId);
             url.searchParams.set('course_id', currentCourseId);

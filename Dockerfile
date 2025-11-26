@@ -37,5 +37,7 @@ USER app
 
 # Expose internal service port (mapped to 3004 outside)
 EXPOSE 8000
+
 # Run the AI service (adjust main:app if needed)
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "test_chat_service.py"]
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

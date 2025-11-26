@@ -13,11 +13,11 @@ class Settings(BaseSettings):
     openai_temperature: float = Field(default=0.5, env="OPENAI_TEMPERATURE")
 
     # PostgreSQL Configuration
-    postgres_db: str = Field(default="postgres", env="POSTGRES_DB")
-    postgres_user: str = Field(default="postgres", env="POSTGRES_USER")
-    postgres_password: str = Field(default="postgres", env="POSTGRES_PASSWORD")
-    postgres_host: str = Field(default="localhost", env="POSTGRES_HOST")
-    postgres_port: int = Field(default=5432, env="POSTGRES_PORT")
+    postgres_db: str = Field(default="ai_db", env="POSTGRES_DB")
+    postgres_user: str = Field(default="lms_ai", env="POSTGRES_USER")
+    postgres_password: str = Field(default="aiASLI1234", env="POSTGRES_PASSWORD")
+    postgres_host: str = Field(default="10.101.20.220", env="POSTGRES_HOST")
+    postgres_port: int = Field(default=5434, env="POSTGRES_PORT")
 
     # Redis Configuration
     # Semantic Cache (port 6380)
