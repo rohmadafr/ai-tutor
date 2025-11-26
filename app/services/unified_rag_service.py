@@ -319,26 +319,34 @@ class UnifiedRAGService:
             # Search for similar documents using integrated method
             results = await self._search_knowledge_base(query_embedding, course_id, top_k=5)
 
-            # Format context from results
-            context_parts = []
+            # Convert results to Document objects for should_use_context and format_context
+            docs = []
             sources = []
 
             for i, result in enumerate(results):
                 content = result.get("text", "")
-                metadata = {
-                    "material_id": result.get("material_id", ""),
-                    "course_id": result.get("course_id", ""),
-                    "filename": result.get("filename", ""),
-                    "score": result.get("score", 0.0)
-                }
+                if not content.strip():
+                    continue
 
-                context_parts.append(f"Document {i+1}: {content}")
+                doc = Document(
+                    page_content=content,
+                    metadata={
+                        "material_id": result.get("material_id", ""),
+                        "course_id": result.get("course_id", ""),
+                        "filename": result.get("filename", ""),
+                        "score": result.get("score", 0.0),
+                        "vector_distance": 1.0 - result.get("score", 0.0)  # Convert score to distance
+                    }
+                )
+                docs.append(doc)
+
                 sources.append({
                     "content": content,
-                    "metadata": metadata
+                    "metadata": doc.metadata
                 })
 
-            context = "\n\n".join(context_parts)
+            # Use format_context with hybrid threshold logic
+            context = format_context(docs) if docs else "Tidak ada dokumen relevan ditemukan."
 
             # Generate response using LLM with token tracking
             input_tokens = 0
@@ -373,6 +381,7 @@ class UnifiedRAGService:
 
             return {
                 "answer": answer,
+                "context": context,  # Add formatted context for transparency
                 "sources": sources,
                 "course_id": course_id,
                 "context_used": bool(context.strip()),
@@ -386,6 +395,7 @@ class UnifiedRAGService:
             rag_logger.error(f"RAG query failed: {e}")
             return {
                 "answer": "Maaf, saya mengalami kesalahan saat memproses pertanyaan Anda.",
+                "context": "Tidak ada knowledge base yang tersedia.",
                 "sources": [],
                 "course_id": course_id,
                 "context_used": False
@@ -982,9 +992,9 @@ class RAGService():
 
         # Import components
         from ..core.telemetry import TokenCounter
-        from ..core.database import get_db_session
+        from ..core.database import async_db
 
-        self.db_session = get_db_session
+        self.db_session = async_db.get_session
         self.rag_logger = rag_logger
         self.token_counter = TokenCounter()
 
@@ -1384,7 +1394,12 @@ class RAGService():
             personalized_response = ""
             full_chunk = None
 
-            async for chunk in personalization_chain.astream({}):
+            async for chunk in personalization_chain.astream({
+                "base_response": base_response,
+                "original_query": original_query,
+                "user_context": user_context,
+                "history": history
+            }):
                 if chunk:
                     if full_chunk is None:
                         full_chunk = chunk
