@@ -45,11 +45,82 @@ async def get_cache_service() -> CustomCacheService:
     return _cache_service
 
 
-@router.post("/completion", response_model=ChatResponse)
-async def chat_completion(request: ChatRequest) -> ChatResponse:
+# @router.post("/completion", response_model=ChatResponse)
+# async def chat_completion(request: ChatRequest) -> ChatResponse:
+#     """
+#     Simple chat completion with RAG + Semantic Cache
+#     Clean logic: Cache → RAG → Cache response
+#     """
+#     try:
+#         # Basic validation
+#         if not request.query or not request.query.strip():
+#             raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+#         if len(request.query) > 10000:
+#             raise HTTPException(status_code=400, detail="Query too long (max 10000 characters)")
+
+#         # Get service
+#         chat_service = await get_chat_service()
+
+#         # Log request
+#         api_logger.info(
+#             "📥 CHAT REQUEST: query='%s...', user_id='%s', course_id='%s'",
+#             request.query[:50] + "..." if len(request.query) > 50 else request.query,
+#             request.user_id or "anonymous",
+#             request.course_id or "global"
+#         )
+
+#         start_time = time.time()
+
+#         # Process chat - SimpleChatService handles cache/RAG logic internally
+#         response = await chat_service.chat(
+#             query=request.query,
+#             user_id=request.user_id,
+#             course_id=request.course_id
+#         )
+
+#         # Calculate response time
+#         response_time = (time.time() - start_time) * 1000
+
+#         # Log response
+#         api_logger.info(
+#             "📤 CHAT RESPONSE: source='%s', cached=%s, sources_count=%d, latency_ms=%.2f",
+#             response.get("source", "unknown"),
+#             response.get("cached", False),
+#             len(response.get("sources", [])),
+#             response_time
+#         )
+
+#         # Create ChatResponse
+#         return ChatResponse(
+#             response=response.get("response", ""),
+#             sources=response.get("sources", []),
+#             cached=response.get("cached", False),
+#             token_usage={
+#                 "input_tokens": 0,  # TODO: Implement token counting
+#                 "output_tokens": 0,
+#                 "total_tokens": 0
+#             },
+#             latency_ms=response_time,
+#             timestamp=time.time(),
+#             metadata={
+#                 "cache_type": response.get("cache_type", "none"),
+#                 "response_source": response.get("source", "unknown"),
+#                 "model_used": "gpt-4o-mini"
+#             },
+#             response_source=f"{'cache_' if response.get('cached') else ''}{response.get('source', 'unknown')}"
+#         )
+
+#     except Exception as e:
+#         api_logger.error(f"Chat completion failed: {e}")
+#         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/ask", response_model=ChatResponse)
+async def chat_ask(request: ChatRequest) -> ChatResponse:
     """
-    Simple chat completion with RAG + Semantic Cache
-    Clean logic: Cache → RAG → Cache response
+    Simple Q&A with database integration using SimpleChatService
+    Non-streaming response with full RAG + Cache + Token tracking
     """
     try:
         # Basic validation
@@ -64,7 +135,7 @@ async def chat_completion(request: ChatRequest) -> ChatResponse:
 
         # Log request
         api_logger.info(
-            "📥 CHAT REQUEST: query='%s...', user_id='%s', course_id='%s'",
+            "📥 CHAT_ASK REQUEST: query='%s...', user_id='%s', course_id='%s'",
             request.query[:50] + "..." if len(request.query) > 50 else request.query,
             request.user_id or "anonymous",
             request.course_id or "global"
@@ -72,11 +143,13 @@ async def chat_completion(request: ChatRequest) -> ChatResponse:
 
         start_time = time.time()
 
-        # Process chat - SimpleChatService handles cache/RAG logic internally
-        response = await chat_service.chat(
+        # Process chat with database integration
+        response = await chat_service.chat_with_database(
             query=request.query,
             user_id=request.user_id,
-            course_id=request.course_id
+            course_id=request.course_id,
+            chatroom_id=request.chatroom_id,
+            use_personalization=getattr(request, 'use_personalization', False)
         )
 
         # Calculate response time
@@ -84,38 +157,41 @@ async def chat_completion(request: ChatRequest) -> ChatResponse:
 
         # Log response
         api_logger.info(
-            "📤 CHAT RESPONSE: source='%s', cached=%s, sources_count=%d, latency_ms=%.2f",
+            "📤 CHAT_ASK RESPONSE: source='%s', cached=%s, personalized=%s, tokens=%d, latency_ms=%.2f",
             response.get("source", "unknown"),
             response.get("cached", False),
-            len(response.get("sources", [])),
+            response.get("personalized", False),
+            response.get("total_tokens", 0),
             response_time
         )
 
-        # Create ChatResponse
+        # Create ChatResponse with real token data
         return ChatResponse(
             response=response.get("response", ""),
-            sources=response.get("sources", []),
+            sources=response.get("source_documents", []),
             cached=response.get("cached", False),
             token_usage={
-                "input_tokens": 0,  # TODO: Implement token counting
-                "output_tokens": 0,
-                "total_tokens": 0
+                "input_tokens": response.get("input_tokens", 0),
+                "output_tokens": response.get("output_tokens", 0),
+                "total_tokens": response.get("total_tokens", 0)
             },
             latency_ms=response_time,
             timestamp=time.time(),
             metadata={
-                "cache_type": response.get("cache_type", "none"),
-                "response_source": response.get("source", "unknown"),
-                "model_used": "gpt-4o-mini"
+                "source": response.get("source", "unknown"),
+                "source_type": response.get("source_type", "knowledge_base"),
+                "response_type": response.get("response_type", "rag_response"),
+                "model_used": response.get("model_used", "gpt-4o-mini"),
+                "personalized": response.get("personalized", False),
+                "course_id": request.course_id,
+                "cost_usd": response.get("cost_usd", 0.0)
             },
-            response_source=f"{'cache_' if response.get('cached') else ''}{response.get('source', 'unknown')}"
+            response_source=response.get("source", "unknown")
         )
 
     except Exception as e:
-        api_logger.error(f"Chat completion failed: {e}")
+        api_logger.error(f"Chat ask failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
 
 
 @router.delete("/cache")
@@ -135,76 +211,76 @@ async def clear_cache(user_id: Optional[str] = None) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/completion-lcel", response_model=ChatResponse)
-async def chat_completion_lcel(request: ChatRequest) -> ChatResponse:
-    """
-    LCEL-powered chat completion with hybrid threshold logic.
-    Same cache service, different RAG implementation using LangChain Expression Language.
-    """
-    try:
-        # Basic validation
-        if not request.query or not request.query.strip():
-            raise HTTPException(status_code=400, detail="Query cannot be empty")
+# @router.post("/completion-lcel", response_model=ChatResponse)
+# async def chat_completion_lcel(request: ChatRequest) -> ChatResponse:
+#     """
+#     LCEL-powered chat completion with hybrid threshold logic.
+#     Same cache service, different RAG implementation using LangChain Expression Language.
+#     """
+#     try:
+#         # Basic validation
+#         if not request.query or not request.query.strip():
+#             raise HTTPException(status_code=400, detail="Query cannot be empty")
 
-        if len(request.query) > 10000:
-            raise HTTPException(status_code=400, detail="Query too long (max 10000 characters)")
+#         if len(request.query) > 10000:
+#             raise HTTPException(status_code=400, detail="Query too long (max 10000 characters)")
 
-        # Get service
-        chat_service = await get_chat_service()
+#         # Get service
+#         chat_service = await get_chat_service()
 
-        # Log request
-        api_logger.info(
-            "📥 LCEL CHAT REQUEST: query='%s...', user_id='%s', course_id='%s'",
-            request.query[:50] + "..." if len(request.query) > 50 else request.query,
-            request.user_id or "anonymous",
-            request.course_id or "global"
-        )
+#         # Log request
+#         api_logger.info(
+#             "📥 LCEL CHAT REQUEST: query='%s...', user_id='%s', course_id='%s'",
+#             request.query[:50] + "..." if len(request.query) > 50 else request.query,
+#             request.user_id or "anonymous",
+#             request.course_id or "global"
+#         )
 
-        start_time = time.time()
+#         start_time = time.time()
 
-        # Process LCEL chat (uses settings.rag_distance_threshold automatically)
-        response = await chat_service.chat_lcel(
-            query=request.query,
-            user_id=request.user_id,
-            course_id=request.course_id
-        )
+#         # Process LCEL chat (uses settings.rag_distance_threshold automatically)
+#         response = await chat_service.chat_lcel(
+#             query=request.query,
+#             user_id=request.user_id,
+#             course_id=request.course_id
+#         )
 
-        # Calculate response time
-        response_time = (time.time() - start_time) * 1000
+#         # Calculate response time
+#         response_time = (time.time() - start_time) * 1000
 
-        # Log response
-        api_logger.info(
-            "📤 LCEL CHAT RESPONSE: source='%s', method='%s', context_quality='%s', latency_ms=%.2f",
-            response.get("source", "unknown"),
-            response.get("method", "unknown"),
-            response.get("context_quality", "unknown"),
-            response_time
-        )
+#         # Log response
+#         api_logger.info(
+#             "📤 LCEL CHAT RESPONSE: source='%s', method='%s', context_quality='%s', latency_ms=%.2f",
+#             response.get("source", "unknown"),
+#             response.get("method", "unknown"),
+#             response.get("context_quality", "unknown"),
+#             response_time
+#         )
 
-        # Create ChatResponse with actual token usage from response if available
-        token_usage = response.get("token_usage", {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0
-        })
+#         # Create ChatResponse with actual token usage from response if available
+#         token_usage = response.get("token_usage", {
+#             "input_tokens": 0,
+#             "output_tokens": 0,
+#             "total_tokens": 0
+#         })
 
-        return ChatResponse(
-            response=response.get("response", ""),
-            sources=response.get("sources", []),
-            cached=response.get("cached", False),
-            token_usage=token_usage,
-            latency_ms=response_time,
-            timestamp=time.time(),
-            metadata={
-                "method": response.get("method", "lcel"),
-                "context_quality": response.get("context_quality", "unknown"),
-                "rag_threshold": response.get("rag_threshold", 0.3),
-                "model_used": settings.openai_model_comprehensive,
-                "response_source": response.get("method", "lcel")
-            },
-            response_source=response.get("method", "lcel")
-        )
+#         return ChatResponse(
+#             response=response.get("response", ""),
+#             sources=response.get("sources", []),
+#             cached=response.get("cached", False),
+#             token_usage=token_usage,
+#             latency_ms=response_time,
+#             timestamp=time.time(),
+#             metadata={
+#                 "method": response.get("method", "lcel"),
+#                 "context_quality": response.get("context_quality", "unknown"),
+#                 "rag_threshold": response.get("rag_threshold", 0.3),
+#                 "model_used": settings.openai_model_comprehensive,
+#                 "response_source": response.get("method", "lcel")
+#             },
+#             response_source=response.get("method", "lcel")
+#         )
 
-    except Exception as e:
-        api_logger.error(f"LCEL chat completion failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+#     except Exception as e:
+#         api_logger.error(f"LCEL chat completion failed: {e}")
+#         raise HTTPException(status_code=500, detail=str(e))

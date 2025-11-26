@@ -173,7 +173,7 @@ class CustomCacheService:
                     # Handle floating point precision issues with negative zero
                     if score_float is not None:
                         # Convert -0.0000 to 0.0000 for proper comparison
-                        if abs(score_float) < 1e-10:
+                        if abs(score_float) < 1e-8:
                             score_float = 0.0
                         if score_float <= distance_threshold:
                             cache_logger.info(f"🎯 Cache hit with distance: {score_float:.4f}")

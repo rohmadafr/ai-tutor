@@ -482,7 +482,7 @@ class RequestTracking(Base):
             course_id=course_id,
             file_hashes=material_ids or [],
             parameters=parameters or {},
-            created_at=datetime.datetime.now(datetime.UTC)
+            created_at=datetime.datetime.utcnow()
         )
         db.add(tracking)
         await db.flush()
@@ -512,7 +512,7 @@ class RequestTracking(Base):
             course_id=course_id,
             file_hashes=material_ids or [],
             parameters=parameters or {},
-            created_at=datetime.datetime.now(datetime.UTC)
+            created_at=datetime.datetime.utcnow()
         )
         db.add(tracking)
         db.commit()
@@ -522,13 +522,13 @@ class RequestTracking(Base):
     def start_processing(self, db: Session):
         """Mark request as processing."""
         self.status = "processing"
-        self.started_at = datetime.datetime.now(datetime.UTC)
+        self.started_at = datetime.datetime.utcnow()
         db.commit()
 
     def complete(self, db: Session, result_count: int = 0, tokens_used: int = 0, request_metadata: dict = None):
         """Mark request as completed."""
         self.status = "completed"
-        self.completed_at = datetime.datetime.now(datetime.UTC)
+        self.completed_at = datetime.datetime.utcnow()
         self.result_count = result_count
         self.tokens_used = tokens_used
         if request_metadata:
@@ -538,7 +538,7 @@ class RequestTracking(Base):
     def fail(self, db: Session, error_message: str):
         """Mark request as failed."""
         self.status = "failed"
-        self.completed_at = datetime.datetime.now(datetime.UTC)
+        self.completed_at = datetime.datetime.utcnow()
         self.error_message = error_message
         db.commit()
 
@@ -636,14 +636,14 @@ class QuestionGeneration(Base):
     def complete(self, db: Session, tokens_used: int):
         """Mark generation as completed."""
         self.status = "completed"
-        self.completed_at = datetime.datetime.now(datetime.UTC)
+        self.completed_at = datetime.datetime.utcnow()
         self.tokens_used = tokens_used
         db.commit()
 
     def fail(self, db: Session, error_message: str):
         """Mark generation as failed."""
         self.status = "failed"
-        self.completed_at = datetime.datetime.now(datetime.UTC)
+        self.completed_at = datetime.datetime.utcnow()
         self.error_message = error_message
         db.commit()
 

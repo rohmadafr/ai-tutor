@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Chat Test V2</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.connecting {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .form-group {
+            margin: 15px 0;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        select, input, textarea, button {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+
+        .chat-container {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 15px;
+            margin: 15px 0;
+            background-color: #fafafa;
+            border-radius: 4px;
+        }
+
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 8px;
+            max-width: 80%;
+        }
+
+        .message.user {
+            background-color: #007bff;
+            color: white;
+            margin-left: auto;
+            text-align: right;
+        }
+
+        .message.assistant {
+            background-color: #e9ecef;
+            color: #333;
+        }
+
+        .message .timestamp {
+            font-size: 0.8em;
+            opacity: 0.7;
+            margin-top: 5px;
+        }
+
+        .message.streaming {
+            border-left: 3px solid #007bff;
+            opacity: 0.9;
+        }
+
+        .message.streaming .message-content:after {
+            content: "▋";
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
+        .console-output {
+            background: #000;
+            color: #00ff00;
+            padding: 10px;
+            border-radius: 4px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        .create-chatroom-btn {
+            background-color: #28a745;
+        }
+
+        .create-chatroom-btn:hover {
+            background-color: #1e7e34;
+        }
+
+        .two-column {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+
+        .right-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WebSocket Chat Test V2</h1>
+        <div id="status" class="status disconnected">Connecting...</div>
+    </div>
+
+    <div class="two-column">
+        <div class="left-panel">
+            <!-- Chat Container -->
+            <div class="container">
+                <h3>Chat Messages - Response</h3>
+                <div id="chatContainer" class="chat-container">
+                    <!-- Messages will appear here -->
+                </div>
+            </div>
+
+            <!-- Message Input -->
+            <div class="container">
+                <div class="form-group">
+                    <label for="messageInput">Type your message/query:</label>
+                    <textarea id="messageInput" rows="3" placeholder="What do you want to ask about this course?"></textarea>
+                </div>
+                <div class="form-group">
+                    <button id="sendBtn" onclick="sendMessage()" disabled>Send Message</button>
+                    <button onclick="clearChat()">Clear Chat</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="right-panel">
+            <!-- User & Course Selection -->
+            <div class="container">
+                <h3>Configuration</h3>
+                <div class="form-group">
+                    <label for="userSelect">Select User:</label>
+                    <select id="userSelect" onchange="onUserChange()">
+                        <option value="">Loading users...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="courseSelect">Select Course:</label>
+                    <select id="courseSelect" onchange="onCourseChange()">
+                        <option value="">Loading courses...</option>
+                    </select>
+                </div>
+
+                <!-- Personalization Controls -->
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" id="personalizationToggle" onchange="onPersonalizationToggle()" style="width: auto; margin: 0;">
+                        Use Personalization
+                    </label>
+                    <small style="color: #666; display: block; margin-top: 5px;">
+                        Enable AI response personalization based on your learning preferences
+                    </small>
+                </div>
+
+                <div class="form-group" id="userContextGroup" style="display: none;">
+                    <label for="userContextSelect">Select Learning Profile:</label>
+                    <select id="userContextSelect" onchange="onUserContextChange()">
+                        <option value="">Select a learning profile...</option>
+                    </select>
+                    <button type="button" onclick="openContextModal()" style="background-color: #6c757d; margin-top: 5px;">
+                        Create/Edit Profile
+                    </button>
+                </div>
+
+                <div class="form-group">
+                    <button class="create-chatroom-btn" onclick="createChatroom()" disabled>Create Chatroom</button>
+                </div>
+                <div class="form-group">
+                    <label>Chatroom Status:</label>
+                    <input type="text" id="chatroomStatus" readonly placeholder="No chatroom created">
+                </div>
+            </div>
+
+            <!-- Console Messages -->
+            <div class="container">
+                <h3>Console Messages</h3>
+                <div id="consoleOutput" class="console-output">
+                    <!-- Console messages will appear here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Context Modal -->
+    <div id="contextModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+        <div style="position: relative; background: white; margin: 50px auto; padding: 20px; width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto; border-radius: 8px;">
+            <h3>Create/Edit Learning Profile</h3>
+
+            <div class="form-group">
+                <label for="templateSelect">Choose Template:</label>
+                <select id="templateSelect" onchange="loadTemplate()">
+                    <option value="">Create Custom Profile</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="contextPreferences">Learning Preferences:</label>
+                <textarea id="contextPreferences" rows="2" placeholder="e.g., I prefer step-by-step explanations with practical examples..." maxlength="500"></textarea>
+                <small>Maximum 500 characters</small>
+            </div>
+
+            <div class="form-group">
+                <label for="contextGoals">Learning Goals:</label>
+                <textarea id="contextGoals" rows="2" placeholder="e.g., Understand fundamental concepts and pass exams with good grades..." maxlength="500"></textarea>
+                <small>Maximum 500 characters</small>
+            </div>
+
+            <div class="form-group">
+                <label for="contextLearningStyle">Learning Style:</label>
+                <textarea id="contextLearningStyle" rows="2" placeholder="e.g., Visual and hands-on learner, prefer demonstrations over theory..." maxlength="500"></textarea>
+                <small>Maximum 500 characters</small>
+            </div>
+
+            <div class="form-group">
+                <label for="contextAdditional">Additional Information:</label>
+                <textarea id="contextAdditional" rows="2" placeholder="e.g., Please provide simple analogies and avoid technical jargon..." maxlength="500"></textarea>
+                <small>Maximum 500 characters</small>
+            </div>
+
+            <div class="form-group">
+                <label>Preview:</label>
+                <div id="contextPreview" style="background: #f8f9fa; padding: 10px; border-radius: 4px; min-height: 100px; white-space: pre-wrap; font-size: 0.9em;"></div>
+            </div>
+
+            <div style="text-align: right; margin-top: 20px;">
+                <button onclick="closeContextModal()" style="background-color: #6c757d; margin-right: 10px;">Cancel</button>
+                <button onclick="saveUserContext()" style="background-color: #28a745;">Save Profile</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let ws = null;
+        let currentChatroomId = null;
+        let currentUserId = null;
+        let currentCourseId = null;
+        let users = [];
+        let courses = [];
+        let userContexts = [];
+        let templates = [];
+        let currentUserContextId = null;
+
+        // WebSocket connection state
+        let isConnected = false;
+
+        // Status management
+        function updateStatus(status, message) {
+            const statusEl = document.getElementById('status');
+            statusEl.className = `status ${status}`;
+            statusEl.textContent = message;
+        }
+
+        // Console logging
+        function log(message, type = 'info') {
+            const consoleOutput = document.getElementById('consoleOutput');
+            const timestamp = new Date().toLocaleTimeString();
+            const color = type === 'error' ? '#ff6b6b' : type === 'warning' ? '#feca57' : type === 'success' ? '#00ff00' : '#00ff00';
+            consoleOutput.innerHTML += `<span style="color: ${color}">[${timestamp}] ${message}</span>\n`;
+            consoleOutput.scrollTop = consoleOutput.scrollHeight;
+        }
+
+        // Personalization Functions
+        function onPersonalizationToggle() {
+            const isEnabled = document.getElementById('personalizationToggle').checked;
+            const contextGroup = document.getElementById('userContextGroup');
+
+            if (isEnabled) {
+                contextGroup.style.display = 'block';
+                loadUserContexts(); // Load contexts for current user/course
+                log('✅ Personalization enabled', 'success');
+            } else {
+                contextGroup.style.display = 'none';
+                currentUserContextId = null;
+                document.getElementById('userContextSelect').value = '';
+                log('❌ Personalization disabled', 'info');
+            }
+        }
+
+        function onUserContextChange() {
+            const selectEl = document.getElementById('userContextSelect');
+            currentUserContextId = selectEl.value;
+
+            if (currentUserContextId) {
+                const context = userContexts.find(uc => uc.context_id === currentUserContextId);
+                if (context) {
+                    log(`📋 Selected learning profile: ${context.context_id}`, 'success');
+                }
+            } else {
+                log('📋 No learning profile selected', 'info');
+            }
+        }
+
+        async function loadTemplates() {
+            try {
+                log('🔄 Loading learning profile templates...');
+                const response = await fetch('http://127.0.0.1:8000/user-contexts/templates');
+                templates = await response.json();
+
+                // Populate template dropdown
+                const templateSelect = document.getElementById('templateSelect');
+                templateSelect.innerHTML = '<option value="">Create Custom Profile</option>';
+
+                templates.forEach(template => {
+                    const option = document.createElement('option');
+                    option.value = template.template_id;
+                    option.textContent = `${template.template_name} - ${template.description}`;
+                    templateSelect.appendChild(option);
+                });
+
+                log(`✅ Loaded ${templates.length} learning profile templates`, 'success');
+            } catch (error) {
+                log(`❌ Failed to load templates: ${error.message}`, 'error');
+            }
+        }
+
+        async function loadUserContexts() {
+            if (!currentUserId || !currentCourseId) return;
+
+            try {
+                log(`🔄 Loading learning profiles for user ${currentUserId}...`);
+                const response = await fetch(`http://127.0.0.1:8000/user-contexts/?user_id=${currentUserId}&course_id=${currentCourseId}`);
+                const data = await response.json();
+                userContexts = data;
+
+                // Populate user context dropdown
+                const contextSelect = document.getElementById('userContextSelect');
+                contextSelect.innerHTML = '<option value="">Select a learning profile...</option>';
+
+                userContexts.forEach(context => {
+                    const option = document.createElement('option');
+                    option.value = context.context_id;
+                    option.textContent = `Profile ${context.context_id.substring(0, 8)}...`;
+                    contextSelect.appendChild(option);
+                });
+
+                log(`✅ Loaded ${userContexts.length} learning profiles`, 'success');
+            } catch (error) {
+                log(`❌ Failed to load learning profiles: ${error.message}`, 'error');
+            }
+        }
+
+        function openContextModal() {
+            if (!currentUserId || !currentCourseId) {
+                alert('Please select user and course first');
+                return;
+            }
+
+            document.getElementById('contextModal').style.display = 'block';
+
+            // Load existing context if one is selected
+            if (currentUserContextId) {
+                loadExistingContext();
+            }
+
+            updateContextPreview();
+        }
+
+        function closeContextModal() {
+            document.getElementById('contextModal').style.display = 'none';
+            // Clear form
+            document.getElementById('templateSelect').value = '';
+            document.getElementById('contextPreferences').value = '';
+            document.getElementById('contextGoals').value = '';
+            document.getElementById('contextLearningStyle').value = '';
+            document.getElementById('contextAdditional').value = '';
+            document.getElementById('contextPreview').textContent = '';
+        }
+
+        function loadTemplate() {
+            const templateId = document.getElementById('templateSelect').value;
+            const template = templates.find(t => t.template_id === templateId);
+
+            if (template) {
+                // Parse template to extract fields
+                const lines = template.user_context.split('\n');
+                let preferences = '', goals = '', learningStyle = '', additional = '';
+
+                lines.forEach(line => {
+                    if (line.startsWith('Preferensi:')) preferences = line.substring('Preferensi:'.length).trim();
+                    else if (line.startsWith('Goals:')) goals = line.substring('Goals:'.length).trim();
+                    else if (line.startsWith('Learning style:')) learningStyle = line.substring('Learning style:'.length).trim();
+                    else if (line.startsWith('Informasi tambahan:')) additional = line.substring('Informasi tambahan:'.length).trim();
+                });
+
+                document.getElementById('contextPreferences').value = preferences;
+                document.getElementById('contextGoals').value = goals;
+                document.getElementById('contextLearningStyle').value = learningStyle;
+                document.getElementById('contextAdditional').value = additional;
+
+                log(`📋 Loaded template: ${template.template_name}`, 'success');
+            }
+
+            updateContextPreview();
+        }
+
+        function updateContextPreview() {
+            const preferences = document.getElementById('contextPreferences').value;
+            const goals = document.getElementById('contextGoals').value;
+            const learningStyle = document.getElementById('contextLearningStyle').value;
+            const additional = document.getElementById('contextAdditional').value;
+
+            const contextText = `Preferensi: ${preferences || 'Tidak ada'}
+Goals: ${goals || 'Tidak ada'}
+Learning style: ${learningStyle || 'Tidak ada'}
+Informasi tambahan: ${additional || 'Tidak ada'}`;
+
+            document.getElementById('contextPreview').textContent = contextText;
+        }
+
+        async function loadExistingContext() {
+            if (!currentUserContextId) return;
+
+            try {
+                const response = await fetch(`http://127.0.0.1:8000/user-contexts/${currentUserContextId}`);
+                const context = await response.json();
+
+                // Parse and populate form fields
+                const lines = context.user_context.split('\n');
+                let preferences = '', goals = '', learningStyle = '', additional = '';
+
+                lines.forEach(line => {
+                    if (line.startsWith('Preferensi:')) preferences = line.substring('Preferensi:'.length).trim();
+                    else if (line.startsWith('Goals:')) goals = line.substring('Goals:'.length).trim();
+                    else if (line.startsWith('Learning style:')) learningStyle = line.substring('Learning style:'.length).trim();
+                    else if (line.startsWith('Informasi tambahan:')) additional = line.substring('Informasi tambahan:'.length).trim();
+                });
+
+                document.getElementById('contextPreferences').value = preferences;
+                document.getElementById('contextGoals').value = goals;
+                document.getElementById('contextLearningStyle').value = learningStyle;
+                document.getElementById('contextAdditional').value = additional;
+
+                log(`📋 Loaded existing learning profile`, 'success');
+            } catch (error) {
+                log(`❌ Failed to load existing context: ${error.message}`, 'error');
+            }
+        }
+
+        async function saveUserContext() {
+            const preferences = document.getElementById('contextPreferences').value.trim();
+            const goals = document.getElementById('contextGoals').value.trim();
+            const learningStyle = document.getElementById('contextLearningStyle').value.trim();
+            const additional = document.getElementById('contextAdditional').value.trim();
+
+            if (!preferences && !goals && !learningStyle && !additional) {
+                alert('Please fill in at least one field');
+                return;
+            }
+
+            const contextText = `Preferensi: ${preferences}
+Goals: ${goals}
+Learning style: ${learningStyle}
+Informasi tambahan: ${additional}`;
+
+            try {
+                if (currentUserContextId) {
+                    // Update existing context
+                    const response = await fetch(`http://127.0.0.1:8000/user-contexts/${currentUserContextId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ user_context: contextText })
+                    });
+
+                    if (response.ok) {
+                        log(`✅ Updated learning profile`, 'success');
+                    }
+                } else {
+                    // Create new context
+                    const response = await fetch('http://127.0.0.1:8000/user-contexts/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            user_id: currentUserId,
+                            course_id: currentCourseId,
+                            user_context: contextText
+                        })
+                    });
+
+                    if (response.ok) {
+                        const newContext = await response.json();
+                        currentUserContextId = newContext.context_id;
+                        log(`✅ Created new learning profile: ${newContext.context_id}`, 'success');
+                    }
+                }
+
+                // Reload contexts and close modal
+                await loadUserContexts();
+                closeContextModal();
+
+                // Select the newly created/updated context
+                document.getElementById('userContextSelect').value = currentUserContextId;
+
+            } catch (error) {
+                log(`❌ Failed to save learning profile: ${error.message}`, 'error');
+                alert(`Failed to save learning profile: ${error.message}`);
+            }
+        }
+
+        function setupContextModalListeners() {
+            // Add input listeners for real-time preview
+            const fields = ['contextPreferences', 'contextGoals', 'contextLearningStyle', 'contextAdditional'];
+            fields.forEach(fieldId => {
+                const field = document.getElementById(fieldId);
+                if (field) {
+                    field.addEventListener('input', updateContextPreview);
+                }
+            });
+
+            // Close modal when clicking outside
+            window.addEventListener('click', function(event) {
+                const modal = document.getElementById('contextModal');
+                if (event.target === modal) {
+                    closeContextModal();
+                }
+            });
+        }
+
+        // Load data from APIs
+        async function loadUsers() {
+            try {
+                log('🔄 Loading users...');
+                const response = await fetch('http://127.0.0.1:8000/users/');
+                const data = await response.json();
+                users = data.users;
+
+                const selectEl = document.getElementById('userSelect');
+                selectEl.innerHTML = '<option value="">Select a user...</option>';
+
+                users.forEach(user => {
+                    const option = document.createElement('option');
+                    option.value = user.user_id;
+                    option.textContent = `${user.username} (${user.role})`;
+                    selectEl.appendChild(option);
+                });
+
+                log(`✅ Loaded ${users.length} users`, 'success');
+            } catch (error) {
+                log(`❌ Failed to load users: ${error.message}`, 'error');
+            }
+        }
+
+        async function loadCourses() {
+            try {
+                log('🔄 Loading courses...');
+                const response = await fetch('http://127.0.0.1:8000/courses/');
+                const data = await response.json();
+                courses = data.courses;
+
+                const selectEl = document.getElementById('courseSelect');
+                selectEl.innerHTML = '<option value="">Select a course...</option>';
+
+                courses.forEach(course => {
+                    const option = document.createElement('option');
+                    option.value = course.course_id;
+                    option.textContent = course.title;
+                    selectEl.appendChild(option);
+                });
+
+                log(`✅ Loaded ${courses.length} courses`, 'success');
+            } catch (error) {
+                log(`❌ Failed to load courses: ${error.message}`, 'error');
+            }
+        }
+
+        // Event handlers
+        function onUserChange() {
+            const selectEl = document.getElementById('userSelect');
+            currentUserId = selectEl.value;
+
+            if (currentUserId) {
+                const user = users.find(u => u.user_id === currentUserId);
+                log(`👤 Selected user: ${user.username} (${user.role})`, 'info');
+            }
+
+            updateChatroomButton();
+        }
+
+        function onCourseChange() {
+            const selectEl = document.getElementById('courseSelect');
+            currentCourseId = selectEl.value;
+
+            if (currentCourseId) {
+                const course = courses.find(c => c.course_id === currentCourseId);
+                log(`📚 Selected course: ${course.title}`, 'info');
+            }
+
+            updateChatroomButton();
+        }
+
+        function updateChatroomButton() {
+            const btn = document.querySelector('.create-chatroom-btn');
+            btn.disabled = !(currentUserId && currentCourseId);
+        }
+
+        // Create chatroom
+        async function createChatroom() {
+            if (!currentUserId || !currentCourseId) {
+                alert('Please select both user and course first!');
+                return;
+            }
+
+            const chatroomData = {
+                user_id: currentUserId,
+                course_id: currentCourseId,
+                room_name: `Chat for ${currentCourseId}`,
+                description: `Chat room for user ${currentUserId} in course ${currentCourseId}`,
+                max_messages: 1000
+            };
+
+            try {
+                log('🔄 Creating chatroom...', 'info');
+
+                const response = await fetch('http://127.0.0.1:8000/chatrooms/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(chatroomData)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const chatroom = await response.json();
+                currentChatroomId = chatroom.chatroom_id;
+
+                // Update UI
+                document.getElementById('chatroomStatus').value = `✅ ${chatroom.room_name}`;
+
+                log(`✅ Chatroom created: ${chatroom.chatroom_id}`, 'success');
+                log(`📊 Room: ${chatroom.room_name}`, 'info');
+
+                // Auto-connect WebSocket
+                connectWebSocket();
+
+            } catch (error) {
+                log(`❌ Failed to create chatroom: ${error.message}`, 'error');
+                alert(`Failed to create chatroom: ${error.message}`);
+            }
+        }
+
+        // WebSocket connection
+        function connectWebSocket() {
+            if (isConnected) {
+                log('⚠️ WebSocket already connected', 'warning');
+                return;
+            }
+
+            if (!currentUserId || !currentCourseId || !currentChatroomId) {
+                log('❌ Missing user, course, or chatroom info', 'error');
+                return;
+            }
+
+            updateStatus('connecting', 'Connecting to WebSocket...');
+            log('🔄 Connecting to WebSocket...', 'info');
+
+            const wsUrl = 'ws://127.0.0.1:8000/ws/stream';
+            const url = new URL(wsUrl);
+            url.searchParams.set('user_id', currentUserId);
+            url.searchParams.set('course_id', currentCourseId);
+            url.searchParams.set('chatroom_id', currentChatroomId);
+
+            ws = new WebSocket(url.toString());
+
+            ws.onopen = function(event) {
+                updateStatus('connected', 'Connected');
+                log('✅ WebSocket connected successfully!', 'success');
+                isConnected = true;
+                document.getElementById('sendBtn').disabled = false;
+            };
+
+            ws.onmessage = function(event) {
+                log(`📨 Received: ${event.data}`);
+
+                try {
+                    const data = JSON.parse(event.data);
+                    displayMessage(data);
+                } catch (e) {
+                    log(`❌ Failed to parse message: ${e.message}`, 'error');
+                }
+            };
+
+            ws.onerror = function(event) {
+                log(`❌ WebSocket error: ${event}`, 'error');
+                updateStatus('disconnected', 'Connection Error');
+                isConnected = false;
+                document.getElementById('sendBtn').disabled = true;
+            };
+
+            ws.onclose = function(event) {
+                log(`🔌 WebSocket closed. Code: ${event.code}`, 'warning');
+                updateStatus('disconnected', 'Disconnected');
+                isConnected = false;
+                document.getElementById('sendBtn').disabled = true;
+            };
+        }
+
+        // Send message
+        function sendMessage() {
+            const messageInput = document.getElementById('messageInput');
+            const message = messageInput.value.trim();
+
+            if (!message) {
+                alert('Please enter a message!');
+                return;
+            }
+
+            if (!isConnected || !ws) {
+                alert('WebSocket is not connected!');
+                return;
+            }
+
+            const personalizationEnabled = document.getElementById('personalizationToggle').checked;
+
+            const messageData = {
+                type: 'chat_request',
+                query: message,
+                use_personalization: personalizationEnabled,
+                chatroom_id: currentChatroomId,
+                timestamp: new Date().toISOString()
+            };
+
+            // Add personalization debug info
+            if (personalizationEnabled) {
+                log(`🎯 Personalization enabled - Profile: ${currentUserContextId || 'None'}`, 'info');
+            } else {
+                log(`🎯 Personalization disabled`, 'info');
+            }
+
+            // Debug: Log the complete message data including chatroom_id
+            log(`📤 Sending message data: ${JSON.stringify(messageData)}`, 'info');
+            log(`🏠 Current chatroom_id: ${currentChatroomId}`, 'info');
+            log(`👤 Current user_id: ${currentUserId}`, 'info');
+            log(`📚 Current course_id: ${currentCourseId}`, 'info');
+
+            ws.send(JSON.stringify(messageData));
+            log(`📤 Sent: ${message}`, 'info');
+
+            // Display user message
+            displayMessage({
+                type: 'user',
+                content: message,
+                timestamp: messageData.timestamp
+            });
+
+            // Clear input
+            messageInput.value = '';
+            messageInput.focus();
+        }
+
+        // Display message in chat
+        let currentStreamingMessage = null;
+
+        function displayMessage(data) {
+            const chatContainer = document.getElementById('chatContainer');
+
+            if (data.type === 'user') {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message user';
+                messageDiv.innerHTML = `
+                    <div class="message-content">${data.content}</div>
+                    <div class="timestamp">${new Date(data.timestamp).toLocaleString()}</div>
+                `;
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+
+            } else if (data.type === 'chat_started') {
+                currentStreamingMessage = document.createElement('div');
+                currentStreamingMessage.className = 'message assistant streaming';
+                currentStreamingMessage.innerHTML = `
+                    <div class="message-content"><em>Thinking...</em></div>
+                    <div class="timestamp">Processing...</div>
+                `;
+                chatContainer.appendChild(currentStreamingMessage);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+
+            } else if (data.type === 'chat_chunk') {
+                if (currentStreamingMessage) {
+                    const contentDiv = currentStreamingMessage.querySelector('.message-content');
+                    const currentText = contentDiv.textContent;
+
+                    if (currentText === 'Thinking...') {
+                        contentDiv.textContent = '';
+                    }
+
+                    contentDiv.textContent += data.chunk;
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+
+            } else if (data.type === 'chat_complete') {
+                if (currentStreamingMessage) {
+                    const contentDiv = currentStreamingMessage.querySelector('.message-content');
+                    const timestampDiv = currentStreamingMessage.querySelector('.timestamp');
+
+                    contentDiv.textContent = data.response;
+                    timestampDiv.textContent = `Completed in ${data.latency_ms}ms`;
+
+                    currentStreamingMessage.classList.remove('streaming');
+                    currentStreamingMessage = null;
+                }
+
+            } else if (data.type === 'error') {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message error';
+                messageDiv.innerHTML = `
+                    <div class="message-content">❌ ${data.error}</div>
+                    <div class="timestamp">${new Date(data.timestamp * 1000).toLocaleString()}</div>
+                `;
+                chatContainer.appendChild(messageDiv);
+
+                if (currentStreamingMessage) {
+                    currentStreamingMessage.remove();
+                    currentStreamingMessage = null;
+                }
+
+            } else {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message assistant';
+                const content = data.content || data.message || JSON.stringify(data);
+                const timestamp = data.timestamp || new Date().toISOString();
+
+                messageDiv.innerHTML = `
+                    <div class="message-content">${content}</div>
+                    <div class="timestamp">${new Date(timestamp).toLocaleString()}</div>
+                `;
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+        }
+
+        // Clear chat
+        function clearChat() {
+            document.getElementById('chatContainer').innerHTML = '';
+            log('🗑️ Chat cleared');
+        }
+
+        // Handle Enter key
+        document.getElementById('messageInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            log('🚀 WebSocket Chat Test V2 Loaded', 'success');
+            log('📋 Steps:', 'info');
+            log('   1. Select user and course', 'info');
+            log('   2. Click "Create Chatroom"', 'info');
+            log('   3. Wait for auto-connection', 'info');
+            log('   4. Send message', 'info');
+
+            // Load initial data
+            loadUsers();
+            loadCourses();
+            loadTemplates();
+            setupContextModalListeners();
+        });
+    </script>
+</body>
+</html>

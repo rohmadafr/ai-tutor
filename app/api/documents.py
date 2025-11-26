@@ -7,11 +7,14 @@ from typing import Dict, Any, Optional
 import tempfile
 from pathlib import Path
 
+from sqlalchemy import select, and_
+
 from ..services.unified_rag_service import UnifiedRAGService
 from ..utils.pdf_extractor import PDFExtractor
 from ..utils.file_hasher import FileHasher
 from ..utils.text_preprocessing import text_preprocessor
 from ..core.logger import api_logger
+from ..core.database import async_db
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -114,6 +117,97 @@ async def upload_document(
             rag_service = await get_rag_service()
             await rag_service.add_documents(documents)
 
+            # Create record in documents table
+            async with async_db.get_session() as session:
+                from ..schemas.db_models import Document
+
+                # Check if document already exists
+                existing_doc_result = await session.execute(
+                    select(Document).where(Document.md5_hash == material_id)
+                )
+                existing_doc = existing_doc_result.scalar_one_or_none()
+
+                if not existing_doc:
+                    # Create new document record
+                    doc_entry = Document(
+                        title=file.filename,
+                        file_path=file.filename,
+                        file_type=file_extension,
+                        file_size=len(content),
+                        md5_hash=material_id,
+                        processing_status="completed",
+                        has_embeddings=True,
+                        embedding_model=getattr(rag_service, 'embedding_model', 'text-embedding-3-small')
+                    )
+
+                    # Assign course_id if provided
+                    if course_id:
+                        doc_entry.course_id = course_id
+
+                    session.add(doc_entry)
+                    await session.commit()
+                    await session.refresh(doc_entry)
+
+                    api_logger.info(f"✅ Created document record for {file.filename}")
+                else:
+                    # Update existing document
+                    existing_doc.processing_status = "completed"
+                    existing_doc.has_embeddings = True
+                    existing_doc.file_size = len(content)
+                    existing_doc.embedding_model = getattr(rag_service, 'embedding_model', 'text-embedding-3-small')
+
+                    if course_id:
+                        existing_doc.course_id = course_id
+
+                    await session.commit()
+                    api_logger.info(f"📝 Updated document record for {file.filename}")
+
+            # Create record in course_knowledge_bases table if course_id provided
+            if course_id:
+                async with async_db.get_session() as session:
+                    from ..schemas.db_models import CourseKnowledgeBase
+
+                    # Check if entry already exists
+                    existing_result = await session.execute(
+                        select(CourseKnowledgeBase).where(
+                            and_(
+                                CourseKnowledgeBase.course_id == course_id,
+                                CourseKnowledgeBase.material_id == material_id
+                            )
+                        )
+                    )
+                    existing_kb = existing_result.scalar_one_or_none()
+
+                    if not existing_kb:
+                        # Create new knowledge base entry
+                        kb_entry = CourseKnowledgeBase(
+                            course_id=course_id,
+                            material_id=material_id,
+                            material_type="document",
+                            title=file.filename,
+                            file_name=file.filename,
+                            file_path=file.filename,
+                            file_size=len(content),
+                            processed=True,
+                            embedding_model=getattr(rag_service, 'embedding_model', 'text-embedding-3-small'),
+                            chunk_count=len(documents),
+                            access_count=0
+                        )
+                        session.add(kb_entry)
+                        await session.commit()
+                        await session.refresh(kb_entry)
+
+                        api_logger.info(f"✅ Created knowledge base entry for {file.filename} in course {course_id}")
+                    else:
+                        # Update existing entry
+                        existing_kb.chunk_count = len(documents)
+                        existing_kb.processed = True
+                        existing_kb.file_size = len(content)
+                        existing_kb.embedding_model = getattr(rag_service, 'embedding_model', 'text-embedding-3-small')
+                        await session.commit()
+
+                        api_logger.info(f"📝 Updated knowledge base entry for {file.filename} in course {course_id}")
+
             api_logger.info(f"Successfully processed {file.filename}: {len(documents)} chunks, material_id: {material_id}")
 
             return {
@@ -124,7 +218,8 @@ async def upload_document(
                 "total_chunks": len(documents),
                 "file_type": file_extension,
                 "preprocessed": True,
-                "total_chars": sum(len(doc["content"]) for doc in documents)
+                "total_chars": sum(len(doc["content"]) for doc in documents),
+                "knowledge_base_linked": course_id is not None
             }
 
         finally:

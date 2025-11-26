@@ -8,6 +8,7 @@ class ChatRequest(BaseModel):
     query: str = Field(..., description="User query/question")
     user_id: Optional[str] = Field(None, description="User identifier for personalization")
     course_id: Optional[str] = Field(None, description="Course identifier for course-specific knowledge")
+    chatroom_id: Optional[str] = Field(None, description="Chatroom identifier for conversation tracking")
     session_id: Optional[str] = Field(None, description="Session identifier")
     context: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional context")
     temperature: Optional[float] = Field(None, description="Override default temperature")
@@ -20,6 +21,7 @@ class ChatRequest(BaseModel):
     max_docs: Optional[int] = Field(None, description="Maximum documents to retrieve from RAG")
     max_context: Optional[int] = Field(None, description="Maximum conversation context messages")
     use_comprehensive_model: bool = Field(default=False, description="Use comprehensive model instead of efficient")
+    use_personalization: bool = Field(default=False, description="Enable response personalization")
 
 
 class ChatResponse(BaseModel):

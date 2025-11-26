@@ -4,6 +4,7 @@ Single responsibility: Check cache → If miss, use RAG → Cache response
 No duplicate logic - each service handles its own responsibilities
 """
 import time
+import datetime
 from typing import Dict, Any, Optional, AsyncGenerator
 from .unified_rag_service import UnifiedRAGService, rag_service
 from .custom_cache_service import CustomCacheService
@@ -26,76 +27,76 @@ class SimpleChatService:
         self.cache_service = CustomCacheService()
         chat_logger.info("SimpleChatService initialized - clean orchestration")
 
-    async def chat(self, query: str, user_id: Optional[str] = None, course_id: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Main chat method - clean orchestration without duplicate logic
+    # async def chat(self, query: str, user_id: Optional[str] = None, course_id: Optional[str] = None) -> Dict[str, Any]:
+    #     """
+    #     Main chat method - clean orchestration without duplicate logic
 
-        Args:
-            query: User query
-            user_id: Optional user ID
-            course_id: Optional course ID for context filtering
+    #     Args:
+    #         query: User query
+    #         user_id: Optional user ID
+    #         course_id: Optional course ID for context filtering
 
-        Returns:
-            Complete response with metadata from either cache or RAG
-        """
-        try:
-            # Step 1: Query cache service (following reference notebook pattern)
-            # cache_service.query() handles both hit/miss and personalization internally
-            cached_result = await self.cache_service.query(query, user_id, course_id)
+    #     Returns:
+    #         Complete response with metadata from either cache or RAG
+    #     """
+    #     try:
+    #         # Step 1: Query cache service (following reference notebook pattern)
+    #         # cache_service.query() handles both hit/miss and personalization internally
+    #         cached_result = await self.cache_service.query(query, user_id, course_id)
 
-            if cached_result is not None:
-                # Cache hit (could be raw or personalized)
-                chat_logger.info(f"Cache hit for user={user_id}, course={course_id}")
-                return {
-                    "response": cached_result,
-                    "source": "cache_raw",  # Default to raw since no personalization
-                    "cached": True,
-                    "sources": [],  # Cache responses don't have RAG sources by design
-                    "user_id": user_id,
-                    "course_id": course_id,
-                    "model": "cached",
-                    "personalized": False
-                }
+    #         if cached_result is not None:
+    #             # Cache hit (could be raw or personalized)
+    #             chat_logger.info(f"Cache hit for user={user_id}, course={course_id}")
+    #             return {
+    #                 "response": cached_result,
+    #                 "source": "cache_raw",  # Default to raw since no personalization
+    #                 "cached": True,
+    #                 "sources": [],  # Cache responses don't have RAG sources by design
+    #                 "user_id": user_id,
+    #                 "course_id": course_id,
+    #                 "model": "cached",
+    #                 "personalized": False
+    #             }
 
-            # Step 2: Cache miss - use RAG (RAG service handles document retrieval)
-            rag_response = await self.rag_service.query(query, course_id)
+    #         # Step 2: Cache miss - use RAG (RAG service handles document retrieval)
+    #         rag_response = await self.rag_service.query(query, course_id)
 
-            # Step 3: Store the RAG response in cache for future use
-            if rag_response.get("answer"):
-                # Generate embedding and store response using reference pattern
-                embedding = await self.cache_service.generate_embedding(query)
-                await self.cache_service.store_response(
-                    prompt=query,
-                    response=rag_response["answer"],
-                    embedding=embedding,
-                    user_id=user_id or "anonymous",
-                    model=settings.openai_model_comprehensive,
-                    course_id=course_id
-                )
+    #         # Step 3: Store the RAG response in cache for future use
+    #         if rag_response.get("answer"):
+    #             # Generate embedding and store response using reference pattern
+    #             embedding = await self.cache_service.generate_embedding(query)
+    #             await self.cache_service.store_response(
+    #                 prompt=query,
+    #                 response=rag_response["answer"],
+    #                 embedding=embedding,
+    #                 user_id=user_id or "anonymous",
+    #                 model=settings.openai_model_comprehensive,
+    #                 course_id=course_id
+    #             )
 
-            chat_logger.info(f"RAG response for user={user_id}, course={course_id}")
-            return {
-                "response": rag_response["answer"],
-                "source": "rag",
-                "cached": False,
-                "sources": rag_response.get("sources", []),
-                "user_id": user_id,
-                "course_id": course_id,
-                "model": rag_response.get("model_used", settings.openai_model_comprehensive),
-                "personalized": rag_response.get("personalized", False)
-            }
+    #         chat_logger.info(f"RAG response for user={user_id}, course={course_id}")
+    #         return {
+    #             "response": rag_response["answer"],
+    #             "source": "rag",
+    #             "cached": False,
+    #             "sources": rag_response.get("sources", []),
+    #             "user_id": user_id,
+    #             "course_id": course_id,
+    #             "model": rag_response.get("model_used", settings.openai_model_comprehensive),
+    #             "personalized": rag_response.get("personalized", False)
+    #         }
 
-        except Exception as e:
-            chat_logger.error(f"Chat request failed: {e}")
-            return {
-                "response": "I apologize, but I encountered an error while processing your request.",
-                "source": "error",
-                "cached": False,
-                "sources": [],
-                "user_id": user_id,
-                "course_id": course_id,
-                "error": str(e)
-            }
+    #     except Exception as e:
+    #         chat_logger.error(f"Chat request failed: {e}")
+    #         return {
+    #             "response": "I apologize, but I encountered an error while processing your request.",
+    #             "source": "error",
+    #             "cached": False,
+    #             "sources": [],
+    #             "user_id": user_id,
+    #             "course_id": course_id,
+    #             "error": str(e)
+    #         }
 
 
 # =================================================================
@@ -218,9 +219,9 @@ class SimpleChatService:
     #         chat_logger.error(f"LCEL Streaming chat failed: {e}")
     #         yield f"Error: {str(e)}"
 
-    # =====================================
-    # NEW IMPLEMENTATION WITH PROPER FLOW LOGIC
-    # =====================================
+# =====================================
+# NEW IMPLEMENTATION WITH PROPER FLOW LOGIC
+# =====================================
 
     async def _track_chat_interaction(
         self,
@@ -228,7 +229,8 @@ class SimpleChatService:
         response_data: Dict[str, Any],
         user_id: Optional[str],
         course_id: Optional[str],
-        chatroom_id: Optional[str]
+        chatroom_id: Optional[str],
+        is_streaming: bool = False
     ):
         """Track chat interaction using existing db_models methods - NO REDUNDANCY"""
         try:
@@ -237,11 +239,12 @@ class SimpleChatService:
 
             async with async_db.get_session() as db:
                 # Step 1: Track request using async method
+                endpoint = "chat_with_database_streaming" if is_streaming else "chat_with_database"
                 request_tracking = await RequestTracking.acreate_request(
                     db=db,
                     request_type="chat",
                     service="simple_chat_service",
-                    endpoint="chat_with_database",
+                    endpoint=endpoint,
                     user_id=user_id,
                     course_id=course_id,
                     parameters={
@@ -255,7 +258,7 @@ class SimpleChatService:
                 # Step 2: Create message using async method
                 message = await Message.acreate_message(
                     db=db,
-                    chatroom_id=chatroom_id or "default",
+                    chatroom_id=chatroom_id if chatroom_id else None,
                     user_id=user_id or "anonymous",
                     message_text=query
                 )
@@ -279,11 +282,55 @@ class SimpleChatService:
                     personalized=response_data.get("personalized", False)
                 )
 
-                chat_logger.info(f"Tracked chat interaction for user={user_id}, chatroom={chatroom_id}")
+                # Step 4: Update tracking status and add token usage
+                input_tokens = response_data.get("input_tokens", 0)
+                output_tokens = response_data.get("output_tokens", 0)
+                total_tokens = response_data.get("total_tokens", input_tokens + output_tokens)  # Use total_tokens if available
+
+                # Update the request tracking with completion data
+                await self._update_tracking_completion(
+                    db, request_tracking.tracking_id, total_tokens,
+                    len(response_data.get("response", "")), response_data
+                )
+
+                chat_logger.info(f"Tracked chat interaction for user={user_id}, chatroom={chatroom_id}, tokens={total_tokens}")
 
         except Exception as e:
             chat_logger.error(f"Failed to track chat interaction: {e}")
             # Don't fail the main response if tracking fails
+
+    async def _update_tracking_completion(
+        self,
+        db,
+        tracking_id: str,
+        tokens_used: int,
+        result_count: int,
+        response_data: Dict[str, Any]
+    ):
+        """Update request tracking with completion data."""
+        try:
+            from ..schemas.db_models import RequestTracking
+
+            # Get the tracking record
+            tracking = await db.get(RequestTracking, tracking_id)
+            if tracking:
+                tracking.status = "completed"
+                tracking.tokens_used = tokens_used
+                tracking.result_count = result_count
+                tracking.completed_at = datetime.datetime.utcnow()
+                tracking.request_metadata = {
+                    "latency_ms": response_data.get("latency_ms", 0.0),
+                    "cached": response_data.get("cached", False),
+                    "personalized": response_data.get("personalized", False),
+                    "response_type": response_data.get("response_type", "rag_response"),
+                    "source_type": response_data.get("source_type", "knowledge_base")
+                }
+
+                await db.commit()
+                await db.refresh(tracking)
+
+        except Exception as e:
+            chat_logger.error(f"Failed to update tracking completion: {e}")
 
     async def chat_with_database_stream(
         self,
@@ -322,33 +369,51 @@ class SimpleChatService:
                         # Panggil streaming personalization method dari RAGService + collect for tracking
                         personalization_start_time = time.time()
                         full_response = ""
+                        personalization_token_data = {}
 
-                        async for chunk in self.new_rag_service._personalize_response_stream(
+                        # Get personalization generator with new metadata format
+                        personalization_gen = self.new_rag_service._personalize_response_stream(
                             cached_result, user_context_text, history_text, query
-                        ):
-                            if chunk:
-                                full_response += chunk
-                                yield chunk
+                        )
+
+                        # Process streaming items with metadata
+                        personalization_token_data = {}
+
+                        async for item in personalization_gen:
+                            if item["type"] == "content":
+                                # Yield content chunks for streaming
+                                full_response += item["data"]
+                                yield item["data"]
+                            elif item["type"] == "metadata":
+                                # Capture token data for tracking
+                                personalization_token_data = item["data"]
+                            elif item["type"] == "error":
+                                # Handle errors
+                                yield item["data"]
 
                         personalization_time_ms = (time.time() - personalization_start_time) * 1000
 
                         # Track personalized cache hit interaction
                         result_data = {
                             "response": full_response,
-                            "source": "cache_personalized",
+                            "source": personalization_token_data.get("source", "cache_personalized"),
                             "cached": True,
                             "personalized": True,
                             "user_id": user_id,
                             "course_id": course_id,
                             "chatroom_id": chatroom_id,
-                            "model_used": settings.openai_model_personalized,  # Personalization model (gpt-4.1-nano)
-                            "response_type": "cache_hit_personalized",
-                            "source_type": "redis_cache",
+                            "model_used": personalization_token_data.get("model_used", settings.openai_model_personalized),
+                            "response_type": personalization_token_data.get("response_type", "cache_hit_personalized"),
+                            "source_type": personalization_token_data.get("source_type", "redis_cache"),
                             "latency_ms": personalization_time_ms,
-                            "cache_similarity_score": None
+                            "cache_similarity_score": None,
+                            "input_tokens": personalization_token_data.get("input_tokens", 0),
+                            "output_tokens": personalization_token_data.get("output_tokens", 0),
+                            "total_tokens": personalization_token_data.get("total_tokens", 0),
+                            "cost_usd": personalization_token_data.get("cost_usd", 0.0)
                         }
 
-                        await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id)
+                        await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id, is_streaming=True)
                     else:
                         # No context, return raw cached response + track
                         result_data = {
@@ -362,14 +427,17 @@ class SimpleChatService:
                             "model_used": "cached",
                             "response_type": "cache_hit_raw",
                             "source_type": "redis_cache",
-                            "latency_ms": cache_query_time_ms
+                            "latency_ms": cache_query_time_ms,
+                            "input_tokens": 0,  # Cache hit = no LLM tokens
+                            "output_tokens": 0,  # Cache hit = no LLM tokens
+                            "cost_usd": 0.0      # Cache hit = no cost
                         }
 
                         # Track cache hit interaction
-                        await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id)
+                        await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id, is_streaming=False)
 
-                        for char in cached_result:
-                            yield char
+                        # Cache hit should NOT stream - return full response immediately
+                        yield cached_result
                 else:
                     # Cache hit + Raw response (single chunk) + track
                     result_data = {
@@ -387,11 +455,10 @@ class SimpleChatService:
                     }
 
                     # Track cache hit interaction
-                    await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id)
+                    await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id, is_streaming=False)
 
-                    # Stream the cached result
-                    for char in cached_result:
-                        yield char
+                    # Cache hit should NOT stream - return full response immediately
+                    yield cached_result
 
                 return
 
@@ -401,35 +468,49 @@ class SimpleChatService:
             # Stream response from RAG service (includes personalization if requested) + timing
             rag_start_time = time.time()
             full_response = ""
-            async for chunk in self.new_rag_service.generate_response_stream(
+            rag_token_data = {}
+
+            async for item in self.new_rag_service.generate_response_stream(
                 question=query,
                 course_id=course_id,
                 chatroom_id=chatroom_id,
                 user_id=user_id,
                 use_personalization=use_personalization
             ):
-                if chunk:
-                    full_response += chunk
-                    yield chunk
+                if item["type"] == "content":
+                    # Yield content chunks for streaming
+                    full_response += item["data"]
+                    yield item["data"]
+                elif item["type"] == "metadata":
+                    # Capture token data for tracking
+                    rag_token_data = item["data"]
+                elif item["type"] == "error":
+                    # Handle errors
+                    yield item["data"]
 
             rag_time_ms = (time.time() - rag_start_time) * 1000
 
-            # Track RAG streaming interaction
+            # Track RAG streaming interaction with real token data
             result_data = {
                 "response": full_response,
-                "source": "rag",
+                "source": rag_token_data.get("source", "rag"),
                 "cached": False,
                 "personalized": use_personalization,
                 "user_id": user_id,
                 "course_id": course_id,
                 "chatroom_id": chatroom_id,
-                "model_used": settings.openai_model_personalized if use_personalization else settings.openai_model_comprehensive,
-                "response_type": "rag_response",
-                "source_type": "knowledge_base",
-                "latency_ms": rag_time_ms
+                "model_used": rag_token_data.get("model_used", settings.openai_model_personalized if use_personalization else settings.openai_model_comprehensive),
+                "response_type": rag_token_data.get("response_type", "rag_response"),
+                "source_type": rag_token_data.get("source_type", "knowledge_base"),
+                "source_documents": rag_token_data.get("source_documents", []),
+                "latency_ms": rag_time_ms,
+                "input_tokens": rag_token_data.get("input_tokens", 0),
+                "output_tokens": rag_token_data.get("output_tokens", 0),
+                "total_tokens": rag_token_data.get("total_tokens", 0),
+                "cost_usd": rag_token_data.get("cost_usd", 0.0)
             }
 
-            await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id)
+            await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id, is_streaming=True)
 
             # Step 2: Store complete response in cache (non-streaming)
             if full_response.strip():
@@ -524,6 +605,13 @@ class SimpleChatService:
                         )
                         personalization_time_ms = (time.time() - personalization_start_time) * 1000
 
+                        # Extract token data from nested structure
+                        token_data = personalized_result.get("tokens", {})
+                        input_tokens = token_data.get("input", 0)
+                        output_tokens = token_data.get("output", 0)
+                        total_tokens = input_tokens + output_tokens
+                        cost_usd = token_data.get("cost", 0.0)
+
                         result_data = {
                             "response": personalized_result["response"],
                             "source": "cache_personalized",
@@ -536,11 +624,15 @@ class SimpleChatService:
                             "response_type": "cache_hit_personalized",
                             "source_type": "redis_cache",
                             "latency_ms": personalization_time_ms,
-                            "cache_similarity_score": None  # Cache hit tidak ada similarity score
+                            "cache_similarity_score": None,  # Cache hit tidak ada similarity score
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": total_tokens,
+                            "cost_usd": cost_usd
                         }
 
                         # Track cache hit + personalization interaction
-                        await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id)
+                        await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id, is_streaming=False)
 
                         return result_data
                     else:
@@ -576,7 +668,7 @@ class SimpleChatService:
                     }
 
                     # Track cache hit interaction
-                    await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id)
+                    await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id, is_streaming=False)
 
                 return result_data
 
@@ -624,6 +716,12 @@ class SimpleChatService:
 
             general_response = rag_response["response"]
             model_used = rag_response["model_used"]
+
+            # Extract token data from RAG response
+            rag_input_tokens = rag_response.get("input_tokens", 0)
+            rag_output_tokens = rag_response.get("output_tokens", 0)
+            rag_total_tokens = rag_response.get("total_tokens", 0)
+            rag_cost_usd = rag_response.get("cost_usd", 0.0)
 
             # Step 2: Store general response in cache for future use
             if general_response.strip():
@@ -673,11 +771,15 @@ class SimpleChatService:
                 "response_type": "rag_response",
                 "source_type": "knowledge_base",
                 "source_documents": rag_response.get("source_documents", []),
-                "latency_ms": rag_response.get("latency_ms", 0)
+                "latency_ms": rag_response.get("latency_ms", 0),
+                "input_tokens": rag_input_tokens,  # Only input tokens
+                "output_tokens": rag_output_tokens, # Only output tokens
+                "total_tokens": rag_total_tokens,    # Total tokens
+                "cost_usd": rag_cost_usd
             }
 
             # Track interaction in database
-            await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id)
+            await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id, is_streaming=False)
 
             chat_logger.info(f"RAG response generated for user={user_id}, course={course_id}")
             return result_data

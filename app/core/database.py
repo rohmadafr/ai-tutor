@@ -84,7 +84,7 @@ class AsyncDatabase:
                 # Connection settings optimized for async operations
                 connect_args={
                     "server_settings": {
-                        "application_name": "ai-tutor-chatbot",
+                        "application_name": "ai-tutor",
                         "jit": "off",  # Disable JIT for simpler query plans
                     },
                     "command_timeout": 60,  # Command timeout in seconds

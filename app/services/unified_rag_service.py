@@ -1176,67 +1176,6 @@ class RAGService():
 
             return user_context_text, history_text
 
-    async def _personalize_response_stream(
-        self,
-        base_response: str,
-        user_context: str,
-        history: str,
-        original_query: str
-    ):
-        """Streaming version of response personalization using GPT-4.1-nano"""
-        try:
-            # Use GPT-4.1-nano specifically for personalization
-            from langchain_openai import ChatOpenAI
-            personalization_llm = ChatOpenAI(
-                model=settings.openai_model_personalized,
-                temperature=settings.openai_temperature,
-                streaming=True,
-                openai_api_key=settings.openai_api_key
-            )
-
-            # Build personalization chain without output parser to get AIMessage
-            personalization_chain = (
-                RunnableParallel({
-                    "base_response": lambda _: base_response,
-                    "original_query": lambda _: original_query,
-                    "user_context": lambda _: user_context,
-                    "history": lambda _: history
-                })
-                | self.personalization_prompt
-                | personalization_llm
-            )
-
-            # Stream personalized response and yield chunks
-            personalized_response = ""
-            full_chunk = None
-            async for chunk in personalization_chain.astream({}):
-                if chunk:
-                    if full_chunk is None:
-                        full_chunk = chunk
-                    else:
-                        full_chunk += chunk
-
-                    # Yield content chunks for streaming
-                    if hasattr(chunk, 'content') and chunk.content:
-                        personalized_response += chunk.content
-                        yield chunk.content
-
-            # Log token usage from final accumulated chunk
-            if full_chunk:
-                usage = self.rag_service._extract_usage_metadata(full_chunk)
-                input_tokens = usage.get("input_tokens", 0)
-                output_tokens = usage.get("output_tokens", 0)
-                cost_usd = self.token_counter.calculate_cost(
-                    input_tokens,
-                    output_tokens,
-                    settings.openai_model_personalized,
-                )
-                rag_logger.info(f"RAGService._personalize_response_stream tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
-
-        except Exception as e:
-            self.rag_logger.error(f"Streaming personalization failed: {e}")
-            # Fallback to base response without personalization
-            yield base_response
 
     async def _personalize_response(
         self,
@@ -1272,8 +1211,8 @@ class RAGService():
             llm_response = await personalization_chain.ainvoke({})
             personalized_response = llm_response.content
 
-            # Extract token usage from final accumulated chunk
-            tokens = {"input": 0, "output": 0}
+            # Extract token usage from LLM response
+            full_chunk = llm_response
             if full_chunk:
                 usage = self.rag_service._extract_usage_metadata(full_chunk)
                 input_tokens = usage.get("input_tokens", 0)
@@ -1302,6 +1241,210 @@ class RAGService():
                 "response": base_response,  # Fallback
                 "model_used": settings.openai_model_comprehensive,
                 "tokens": {"input": 0, "output": 0, "cost": 0.0}
+            }
+
+    async def generate_response_stream(
+        self,
+        question: str,
+        course_id: Optional[str] = None,
+        chatroom_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        use_personalization: bool = False
+    ):
+        """
+        Streaming version of generate_response with consistent parameters.
+        Yields dict dengan 'type' untuk membedakan content vs metadata.
+        Handles RAG + optional personalization with streaming.
+        """
+        try:
+            # Step 1: Get context components
+            rag_result = await self._get_knowledge_base_context(question, course_id)
+
+            # Step 2: Build RAG streaming chain with LangChain ChatOpenAI (stream_usage=True)
+            from langchain_openai import ChatOpenAI
+            chat_openai = ChatOpenAI(
+                model=settings.openai_model_comprehensive,
+                temperature=settings.openai_temperature,
+                api_key=settings.openai_api_key,
+                streaming=True,
+                stream_usage=True  # Enable usage metadata in streaming
+            )
+
+            rag_streaming_chain = (
+                RunnableParallel({
+                    "knowledge_base": lambda _: rag_result.get("answer", ""),
+                    "question": RunnablePassthrough()
+                })
+                | self.rag_prompt
+                | chat_openai
+            )
+
+            # Step 3: Stream RAG response with token tracking
+            full_response = ""
+            full_chunk = None
+
+            async for chunk in rag_streaming_chain.astream(question):
+                if chunk:
+                    if full_chunk is None:
+                        full_chunk = chunk
+                    else:
+                        full_chunk += chunk
+
+                    # Yield content chunks
+                    if hasattr(chunk, 'content') and chunk.content:
+                        full_response += chunk.content
+                        yield {
+                            "type": "content",
+                            "data": chunk.content
+                        }
+
+            # Extract and yield token usage metadata
+            if full_chunk:
+                usage = self.rag_service._extract_usage_metadata(full_chunk)
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                cost_usd = self.token_counter.calculate_cost(
+                    input_tokens,
+                    output_tokens,
+                    settings.openai_model_comprehensive,
+                )
+                rag_logger.info(f"RAGService.stream RAG tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
+
+                # Yield RAG metadata
+                yield {
+                    "type": "metadata",
+                    "data": {
+                        "source": "rag",
+                        "model_used": settings.openai_model_comprehensive,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                        "cost_usd": cost_usd,
+                        "response_type": "rag_response",
+                        "source_type": "knowledge_base",
+                        "source_documents": rag_result.get("sources", [])
+                    }
+                }
+
+            # Step 4: Handle personalization if requested
+            if use_personalization:
+                user_context_text, history_text = await self._get_context_components(
+                    chatroom_id, user_id, course_id
+                )
+
+                if user_context_text or history_text:
+                    # Use dedicated streaming personalization method with token tracking
+                    async for item in self._personalize_response_stream(
+                        full_response, user_context_text, history_text, question
+                    ):
+                        # Forward content and metadata from personalization
+                        yield item
+
+        except Exception as e:
+            self.rag_logger.error(f"RAGService streaming failed: {e}")
+            yield {
+                "type": "error",
+                "data": f"Maaf, terjadi kesalahan saat memproses permintaan: {str(e)}"
+            }
+
+    async def _personalize_response_stream(
+        self,
+        base_response: str,
+        user_context: str,
+        history: str,
+        original_query: str
+    ):
+        """Streaming version of response personalization using GPT-4.1-nano.
+
+        Yields dict dengan 'type' untuk membedakan content vs metadata.
+        """
+        try:
+            # Use GPT-4.1-nano specifically for personalization
+            from langchain_openai import ChatOpenAI
+            personalization_llm = ChatOpenAI(
+                model=settings.openai_model_personalized,
+                temperature=settings.openai_temperature,
+                streaming=True,
+                openai_api_key=settings.openai_api_key
+            )
+
+            # Build personalization chain without output parser to get AIMessage
+            personalization_chain = (
+                RunnableParallel({
+                    "base_response": lambda _: base_response,
+                    "original_query": lambda _: original_query,
+                    "user_context": lambda _: user_context,
+                    "history": lambda _: history
+                })
+                | self.personalization_prompt
+                | personalization_llm
+            )
+
+            # Stream personalized response and yield chunks
+            personalized_response = ""
+            full_chunk = None
+
+            async for chunk in personalization_chain.astream({}):
+                if chunk:
+                    if full_chunk is None:
+                        full_chunk = chunk
+                    else:
+                        full_chunk += chunk
+
+                    # Yield content chunks
+                    if hasattr(chunk, 'content') and chunk.content:
+                        personalized_response += chunk.content
+                        yield {
+                            "type": "content",
+                            "data": chunk.content
+                        }
+
+            # Extract and yield token usage metadata
+            if full_chunk:
+                usage = self.rag_service._extract_usage_metadata(full_chunk)
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                cost_usd = self.token_counter.calculate_cost(
+                    input_tokens,
+                    output_tokens,
+                    settings.openai_model_personalized,
+                )
+                rag_logger.info(f"RAGService._personalize_response_stream tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
+
+                # Yield personalization metadata
+                yield {
+                    "type": "metadata",
+                    "data": {
+                        "source": "cache_personalized",
+                        "model_used": settings.openai_model_personalized,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                        "cost_usd": cost_usd,
+                        "response_type": "cache_hit_personalized",
+                        "source_type": "redis_cache"
+                    }
+                }
+
+        except Exception as e:
+            self.rag_logger.error(f"Streaming personalization failed: {e}")
+            # Fallback to base response without personalization
+            yield {
+                "type": "content",
+                "data": base_response
+            }
+            yield {
+                "type": "metadata",
+                "data": {
+                    "source": "cache_personalized",
+                    "model_used": settings.openai_model_personalized,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "cost_usd": 0.0,
+                    "response_type": "cache_hit_personalized",
+                    "source_type": "redis_cache"
+                }
             }
 
     async def store_in_database(
@@ -1339,85 +1482,6 @@ class RAGService():
         except Exception as e:
             self.rag_logger.error(f"Failed to store in database: {e}")
             return False
-
-    async def generate_response_stream(
-        self,
-        question: str,
-        course_id: Optional[str] = None,
-        chatroom_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        use_personalization: bool = False
-    ):
-        """
-        Streaming version of generate_response with consistent parameters.
-        Handles RAG + optional personalization with streaming.
-        """
-        try:
-            # Step 1: Get context components
-            rag_result = await self._get_knowledge_base_context(question, course_id)
-
-            # Step 2: Build RAG streaming chain with LangChain ChatOpenAI (stream_usage=True)
-            from langchain_openai import ChatOpenAI
-            chat_openai = ChatOpenAI(
-                model=settings.openai_model_comprehensive,
-                temperature=settings.openai_temperature,
-                api_key=settings.openai_api_key,
-                streaming=True,
-                stream_usage=True  # Enable usage metadata in streaming
-            )
-
-            rag_streaming_chain = (
-                RunnableParallel({
-                    "knowledge_base": lambda _: rag_result.get("answer", ""),
-                    "question": RunnablePassthrough()
-                })
-                | self.rag_prompt
-                | chat_openai
-            )
-
-            # Step 3: Stream RAG response with token tracking
-            full_response = ""
-            full_chunk = None
-            async for chunk in rag_streaming_chain.astream(question):
-                if chunk:
-                    if full_chunk is None:
-                        full_chunk = chunk
-                    else:
-                        full_chunk += chunk
-
-                    # Yield content only (not usage metadata)
-                    if hasattr(chunk, 'content') and chunk.content:
-                        full_response += chunk.content
-                        yield chunk.content
-
-            # Extract token usage from final accumulated chunk
-            if full_chunk:
-                usage = self.rag_service._extract_usage_metadata(full_chunk)
-                input_tokens = usage.get("input_tokens", 0)
-                output_tokens = usage.get("output_tokens", 0)
-                cost_usd = self.token_counter.calculate_cost(
-                    input_tokens,
-                    output_tokens,
-                    settings.openai_model_comprehensive,
-                )
-                rag_logger.info(f"RAGService.stream RAG tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
-
-            # Step 4: Handle personalization if requested
-            if use_personalization:
-                user_context_text, history_text = await self._get_context_components(
-                    chatroom_id, user_id, course_id
-                )
-
-                if user_context_text or history_text:
-                    # Use dedicated streaming personalization method with token tracking
-                    async for chunk in self._personalize_response_stream(
-                        full_response, user_context_text, history_text, question
-                    ):
-                        yield chunk
-
-        except Exception as e:
-            self.rag_logger.error(f"RAGService streaming failed: {e}")
-            yield f"Maaf, terjadi kesalahan saat memproses permintaan: {str(e)}"
 
 # Global RAG service instance with database integration
 rag_service = RAGService()

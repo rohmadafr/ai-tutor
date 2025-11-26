@@ -15,6 +15,11 @@ from app.api.health import router as health_router
 from app.api.simple_chat import router as simple_chat_router
 from app.api.websocket_chat import router as websocket_router
 from app.api.documents import router as documents_router
+from app.api.chatrooms import router as chatroom_router
+from app.api.database_seeder import router as seeder_router
+from app.api.courses import router as courses_router
+from app.api.users import router as users_router
+from app.api.user_contexts import router as user_contexts_router
 from app.core.exceptions import TutorServiceException
 from app.services.simple_chat_service import SimpleChatService
 
@@ -36,12 +41,13 @@ async def lifespan(app: FastAPI):
         app_logger.info("Tutor Services API started successfully")
         app_logger.info("API available at http://%s:%s", settings.api_host, settings.api_port)
         app_logger.info("Health check at http://%s:%s/health", settings.api_host, settings.api_port)
-        app_logger.info("Legacy chat API at http://%s:%s/chat/completion", settings.api_host, settings.api_port)
-        app_logger.info("LCEL chat API at http://%s:%s/chat/completion-lcel", settings.api_host, settings.api_port)
+        app_logger.info("Simple chat API at http://%s:%s/chat/ask", settings.api_host, settings.api_port)
         app_logger.info("Document upload API at http://%s:%s/documents/upload", settings.api_host, settings.api_port)
         app_logger.info("Document search API at http://%s:%s/documents/search", settings.api_host, settings.api_port)
-        app_logger.info("WebSocket streaming at ws://%s:%s/ws/chat-lcel", settings.api_host, settings.api_port)
+        app_logger.info("WebSocket streaming at ws://%s:%s/ws/stream", settings.api_host, settings.api_port)
         app_logger.info("WebSocket status at http://%s:%s/ws/status", settings.api_host, settings.api_port)
+        app_logger.info("Chatroom CRUD API at http://%s:%s/chatrooms/", settings.api_host, settings.api_port)
+        app_logger.info("Database seeder at http://%s:%s/seed/all", settings.api_host, settings.api_port)
         app_logger.info("API docs at http://%s:%s/docs", settings.api_host, settings.api_port)
 
         yield
@@ -68,9 +74,9 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins or ["*"],
+    allow_origins=["*"],  # Allow all origins for testing
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -79,6 +85,11 @@ app.include_router(simple_chat_router)
 app.include_router(websocket_router)
 app.include_router(documents_router)
 app.include_router(health_router)
+app.include_router(chatroom_router)
+app.include_router(seeder_router)
+app.include_router(courses_router)
+app.include_router(users_router)
+app.include_router(user_contexts_router)
 
 
 @app.exception_handler(TutorServiceException)
