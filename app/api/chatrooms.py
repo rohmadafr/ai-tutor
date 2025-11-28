@@ -6,11 +6,13 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, desc
 from typing import Dict, Any, List, Optional
+from datetime import datetime
 from pydantic import BaseModel, Field
 import time
 
 from ..core.database import async_db, AsyncCRUD
-from ..schemas.db_models import Chatroom, User, Course, UserContext
+from ..schemas.db_models import Chatroom, User, Course, UserContext, Message, Response
+import uuid
 from ..core.logger import api_logger
 
 router = APIRouter(prefix="/chatrooms", tags=["chatrooms"])
@@ -46,6 +48,41 @@ class ChatroomListResponse(BaseModel):
     total_count: int
     page: int
     limit: int
+
+# Pydantic models for messages and responses
+class MessageResponse(BaseModel):
+    message_id: str
+    chatroom_id: str
+    user_id: str
+    message_text: Optional[str] = None
+    created_at: str
+    responses: List["ResponseResponse"] = []
+
+class ResponseResponse(BaseModel):
+    response_id: str
+    message_id: str
+    chatroom_id: str
+    user_id: str
+    response_text: str
+    model_used: str
+    response_type: str
+    source_type: str
+    cache_hit: bool
+    cache_similarity_score: Optional[float] = None
+    personalized: bool
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    cost_usd: float
+    latency_ms: float
+    created_at: str
+    updated_at: str
+
+class ChatroomMessagesResponse(BaseModel):
+    chatroom_id: str
+    messages: List[MessageResponse]
+    total_messages: int
+    total_responses: int
 
 # CRUD operations using AsyncCRUD base class
 class ChatroomCRUD(AsyncCRUD):
@@ -137,6 +174,64 @@ class ChatroomCRUD(AsyncCRUD):
                 }
             }
 
+# Helper function for welcome message
+async def create_welcome_message(chatroom_id: str, user_id: str, course_title: str, user_name: str = None):
+    """Create automatic AI response welcome message when chatroom is created (no user message needed)."""
+    try:
+        async with async_db.get_session() as session:
+            # Create a dummy system message for the response to link to
+            system_message = Message(
+                message_id=str(uuid.uuid4()),
+                chatroom_id=chatroom_id,
+                user_id=user_id,
+                message_text=None
+            )
+            session.add(system_message)
+            await session.flush()
+
+            # Create AI response welcome message
+            welcome_response_text = f"""👋 Halo {user_name or 'Pengguna'}!
+
+Selamat datang di chatroom untuk course *{course_title}*! 🚀
+
+Saya adalah AI Tutor yang siap membantu kamu:
+- 📚 Menjelaskan materi yang sulit dipahami
+- 💡 Memberikan contoh dan ilustrasi
+- 🎯 Membantu mengerjakan latihan soal
+- ❓ Menjawab pertanyaan seputar course ini
+- 📝 Membuat rangkuman materi
+
+Jangan ragu bertanya ya! Saya akan berusaha menjawab dengan cara yang mudah kamu pahami.
+
+Apa yang ingin kita pelajari hari ini? 😊"""
+
+            response = Response(
+                response_id=str(uuid.uuid4()),
+                message_id=system_message.message_id,
+                chatroom_id=chatroom_id,
+                user_id=user_id,
+                response_text=welcome_response_text,
+                model_used="system",
+                response_type="cache_hit_raw",
+                source_type="redis_cache",
+                cache_hit=False,
+                personalized=False,
+                input_tokens=0,
+                output_tokens=0,
+                total_tokens=0,
+                cost_usd=0.0,
+                latency_ms=0.0
+            )
+            session.add(response)
+            await session.commit()
+
+            api_logger.info(f"✅ Created welcome message for chatroom {chatroom_id}")
+            return message.message_id
+
+    except Exception as e:
+        api_logger.error(f"❌ Failed to create welcome message: {e}")
+        return None
+
 # Initialize CRUD
 chatroom_crud = ChatroomCRUD()
 
@@ -166,25 +261,8 @@ async def create_chatroom(chatroom_data: ChatroomCreate) -> ChatroomResponse:
             if not course:
                 raise HTTPException(status_code=404, detail=f"Course {chatroom_data.course_id} not found")
 
-        # Check if chatroom already exists for this user-course combination
-        existing_chatroom = await chatroom_crud.get_by_user_course(
-            chatroom_data.user_id,
-            chatroom_data.course_id
-        )
-
-        if existing_chatroom:
-            api_logger.info(f"Returning existing chatroom for user {chatroom_data.user_id} in course {chatroom_data.course_id}")
-            return ChatroomResponse(
-                chatroom_id=existing_chatroom.chatroom_id,
-                user_id=existing_chatroom.user_id,
-                course_id=existing_chatroom.course_id,
-                room_name=existing_chatroom.room_name,
-                description=existing_chatroom.description,
-                is_active=existing_chatroom.is_active,
-                max_messages=existing_chatroom.max_messages,
-                created_at=existing_chatroom.created_at.isoformat(),
-                updated_at=existing_chatroom.updated_at.isoformat()
-            )
+        # Multiple chatrooms allowed for same user-course combination
+        # Always create new chatroom regardless of existing ones
 
         # Create chatroom
         chatroom_dict = chatroom_data.model_dump()
@@ -192,17 +270,39 @@ async def create_chatroom(chatroom_data: ChatroomCreate) -> ChatroomResponse:
 
         api_logger.info(f"✅ Created chatroom {chatroom.chatroom_id}")
 
-        # Create user context for this course if it doesn't exist
+        # Create user context and welcome message
         async with async_db.get_session() as session:
             try:
+                # Create user context for this course if it doesn't exist
                 await UserContext.aget_or_create(
                     session,
                     chatroom_data.user_id,
                     chatroom_data.course_id,
                     initial_context="New user - ready to start learning!"
                 )
+
+                # Get user name and course title for personalized welcome
+                user_result = await session.execute(
+                    select(User).where(User.user_id == chatroom_data.user_id)
+                )
+                user = user_result.scalar_one_or_none()
+                user_name = user.username if user else None
+
+                course_result = await session.execute(
+                    select(Course).where(Course.course_id == chatroom_data.course_id)
+                )
+                course = course_result.scalar_one_or_none()
+                course_title = course.title if course else "kursus"
+
+                # Create automatic welcome message
+                await create_welcome_message(
+                    chatroom.chatroom_id,
+                    chatroom_data.user_id,
+                    course_title,
+                    user_name
+                )
             except Exception as e:
-                api_logger.warning(f"Failed to create user context: {e}")
+                api_logger.warning(f"Failed to create user context or welcome message: {e}")
 
         return ChatroomResponse(
             chatroom_id=chatroom.chatroom_id,
@@ -424,4 +524,115 @@ async def reactivate_chatroom(chatroom_id: str) -> ChatroomResponse:
         raise
     except Exception as e:
         api_logger.error(f"Failed to reactivate chatroom {chatroom_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{chatroom_id}/messages", response_model=ChatroomMessagesResponse)
+async def get_chatroom_messages(
+    chatroom_id: str,
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(50, ge=1, le=200, description="Messages per page"),
+    include_responses: bool = Query(True, description="Include responses for each message")
+) -> ChatroomMessagesResponse:
+    """Get all messages and their responses for a specific chatroom."""
+    try:
+        # Verify chatroom exists
+        async with async_db.get_session() as session:
+            chatroom_result = await session.execute(
+                select(Chatroom).where(Chatroom.chatroom_id == chatroom_id)
+            )
+            chatroom = chatroom_result.scalar_one_or_none()
+
+            if not chatroom:
+                raise HTTPException(status_code=404, detail=f"Chatroom {chatroom_id} not found")
+
+        # Get messages with pagination
+        async with async_db.get_session() as session:
+            # Get total message count
+            message_count_result = await session.execute(
+                select(Message.message_id).where(Message.chatroom_id == chatroom_id)
+            )
+            total_messages = len(message_count_result.scalars().all())
+
+            # Get paginated messages
+            messages_query = (
+                select(Message)
+                .where(Message.chatroom_id == chatroom_id)
+                .order_by(Message.created_at.asc())
+                .limit(limit)
+                .offset((page - 1) * limit)
+            )
+
+            messages_result = await session.execute(messages_query)
+            messages = messages_result.scalars().all()
+
+            # Get total response count for this chatroom
+            if include_responses:
+                response_count_result = await session.execute(
+                    select(Response.response_id).where(Response.chatroom_id == chatroom_id)
+                )
+                total_responses = len(response_count_result.scalars().all())
+            else:
+                total_responses = 0
+
+            # Build response with optional responses
+            message_responses = []
+            for message in messages:
+                message_response = MessageResponse(
+                    message_id=message.message_id,
+                    chatroom_id=message.chatroom_id,
+                    user_id=message.user_id,
+                    message_text=message.message_text,
+                    created_at=message.created_at.isoformat(),
+                    responses=[]
+                )
+
+                # Get responses for this message if requested
+                if include_responses:
+                    responses_query = (
+                        select(Response)
+                        .where(Response.message_id == message.message_id)
+                        .order_by(Response.created_at.asc())
+                    )
+
+                    responses_result = await session.execute(responses_query)
+                    responses = responses_result.scalars().all()
+
+                    for response in responses:
+                        response_response = ResponseResponse(
+                            response_id=response.response_id,
+                            message_id=response.message_id,
+                            chatroom_id=response.chatroom_id,
+                            user_id=response.user_id,
+                            response_text=response.response_text,
+                            model_used=response.model_used,
+                            response_type=response.response_type,
+                            source_type=response.source_type,
+                            cache_hit=response.cache_hit,
+                            cache_similarity_score=response.cache_similarity_score,
+                            personalized=response.personalized,
+                            input_tokens=response.input_tokens,
+                            output_tokens=response.output_tokens,
+                            total_tokens=response.total_tokens,
+                            cost_usd=response.cost_usd,
+                            latency_ms=response.latency_ms,
+                            created_at=response.created_at.isoformat(),
+                            updated_at=response.updated_at.isoformat()
+                        )
+                        message_response.responses.append(response_response)
+
+                message_responses.append(message_response)
+
+        api_logger.info(f"Retrieved {len(messages)} messages for chatroom {chatroom_id} (page {page})")
+
+        return ChatroomMessagesResponse(
+            chatroom_id=chatroom_id,
+            messages=message_responses,
+            total_messages=total_messages,
+            total_responses=total_responses
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        api_logger.error(f"Failed to get messages for chatroom {chatroom_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

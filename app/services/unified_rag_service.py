@@ -102,20 +102,30 @@ class UnifiedRAGService:
             # Try new format first (LangChain >= 0.1.0)
             if hasattr(llm_response, 'usage_metadata') and llm_response.usage_metadata:
                 usage = llm_response.usage_metadata
-                return {
-                    "input_tokens": usage.get('input_tokens', 0),
-                    "output_tokens": usage.get('output_tokens', 0),
-                    "total_tokens": usage.get('total_tokens', 0)
-                }
+                if isinstance(usage, dict):
+                    return {
+                        "input_tokens": usage.get('input_tokens', 0),
+                        "output_tokens": usage.get('output_tokens', 0),
+                        "total_tokens": usage.get('total_tokens', 0)
+                    }
+                else:
+                    rag_logger.warning(f"usage_metadata is not a dict: {type(usage)}, value: {usage}")
+                    # Fall through to old format or estimation
 
             # Try old format (LangChain < 0.1.0)
             if hasattr(llm_response, 'response_metadata'):
-                token_usage = llm_response.response_metadata.get('token_usage', {})
-                return {
-                    "input_tokens": token_usage.get('prompt_tokens', 0),
-                    "output_tokens": token_usage.get('completion_tokens', 0),
-                    "total_tokens": token_usage.get('total_tokens', 0)
-                }
+                # Ensure response_metadata is a dictionary, not string
+                response_metadata = llm_response.response_metadata
+                if isinstance(response_metadata, dict):
+                    token_usage = response_metadata.get('token_usage', {})
+                    return {
+                        "input_tokens": token_usage.get('prompt_tokens', 0),
+                        "output_tokens": token_usage.get('completion_tokens', 0),
+                        "total_tokens": token_usage.get('total_tokens', 0)
+                    }
+                else:
+                    rag_logger.warning(f"response_metadata is not a dict: {type(response_metadata)}, value: {response_metadata}")
+                    # Fall through to token estimation
 
             # Fallback: estimate tokens using TokenCounter
             rag_logger.warning("No usage metadata found in LLM response, estimating tokens")
@@ -334,16 +344,18 @@ class UnifiedRAGService:
                         "material_id": result.get("material_id", ""),
                         "course_id": result.get("course_id", ""),
                         "filename": result.get("filename", ""),
+                        "page": result.get("page", ""),
                         "score": result.get("score", 0.0),
                         "vector_distance": 1.0 - result.get("score", 0.0)  # Convert score to distance
                     }
                 )
                 docs.append(doc)
 
-                sources.append({
-                    "content": content,
-                    "metadata": doc.metadata
-                })
+                if doc.metadata.get("vector_distance", 1.0) < settings.rag_distance_threshold:
+                    sources.append({
+                        "content": content,
+                        "metadata": doc.metadata
+                    })
 
             # Use format_context with hybrid threshold logic
             context = format_context(docs) if docs else "Tidak ada dokumen relevan ditemukan."
@@ -600,7 +612,7 @@ class UnifiedRAGService:
                     "material_id": getattr(doc, "material_id", ""),
                     "course_id": getattr(doc, "course_id", ""),
                     "filename": getattr(doc, "filename", ""),
-            "page": getattr(doc, "page", "")
+                    "page": getattr(doc, "page", "")
                 })
 
             rag_logger.info(f"Retrieved {len(documents)} documents for material_id: {material_id}")

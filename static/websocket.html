@@ -163,11 +163,41 @@
             flex-direction: column;
             gap: 20px;
         }
+
+        .sources-container {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            border-left: 3px solid #007bff;
+        }
+        
+        .source-item {
+            margin: 8px 0;
+            padding: 8px;
+            background: white;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        
+        .source-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #495057;
+        }
+        
+        .source-content {
+            color: #6c757d;
+            font-size: 0.85em;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>WebSocket Chat Test V2</h1>
+        <h1>WebSocket Chat Test</h1>
         <div id="status" class="status disconnected">Connecting...</div>
     </div>
 
@@ -314,6 +344,10 @@
         // WebSocket connection state
         let isConnected = false;
 
+        // API Base URL
+        const API_BASE_URL = "http://127.0.0.1:8000";
+        const WS_URL = "ws://127.0.0.1:8000";
+
         // Status management
         function updateStatus(status, message) {
             const statusEl = document.getElementById('status');
@@ -364,7 +398,7 @@
         async function loadTemplates() {
             try {
                 log('🔄 Loading learning profile templates...');
-                const response = await fetch('http://10.101.20.220:8000/user-contexts/templates');
+                const response = await fetch(`${API_BASE_URL}/user-contexts/templates`);
                 templates = await response.json();
 
                 // Populate template dropdown
@@ -389,7 +423,7 @@
 
             try {
                 log(`🔄 Loading learning profiles for user ${currentUserId}...`);
-                const response = await fetch(`http://10.101.20.220:8000/user-contexts/?user_id=${currentUserId}&course_id=${currentCourseId}`);
+                const response = await fetch(`${API_BASE_URL}/user-contexts/?user_id=${currentUserId}&course_id=${currentCourseId}`);
                 const data = await response.json();
                 userContexts = data;
 
@@ -482,8 +516,15 @@ Informasi tambahan: ${additional || 'Tidak ada'}`;
             if (!currentUserContextId) return;
 
             try {
-                const response = await fetch(`http://10.101.20.220:8000/user-contexts/${currentUserContextId}`);
+                log(`🔄 Loading existing context: ${currentUserContextId}`, 'info');
+                const response = await fetch(`${API_BASE_URL}/user-contexts/${currentUserContextId}`);
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
                 const context = await response.json();
+                log(`📄 Context data received: ${JSON.stringify(context)}`, 'info');
 
                 // Parse and populate form fields
                 const lines = context.user_context.split('\n');
@@ -496,14 +537,29 @@ Informasi tambahan: ${additional || 'Tidak ada'}`;
                     else if (line.startsWith('Informasi tambahan:')) additional = line.substring('Informasi tambahan:'.length).trim();
                 });
 
+                // Handle different context formats
+                if (!preferences && !goals && !learningStyle && !additional) {
+                    // Try to extract Goals from simple format
+                    const goalsMatch = context.user_context.match(/Goals:\s*([^.]*)\.?/i);
+                    if (goalsMatch) {
+                        goals = goalsMatch[1].trim();
+                        preferences = context.user_context.replace(/Goals:\s*([^.]*)\.?/i, '').trim();
+                    } else {
+                        // Put entire context in preferences field
+                        preferences = context.user_context;
+                    }
+                }
+
                 document.getElementById('contextPreferences').value = preferences;
                 document.getElementById('contextGoals').value = goals;
                 document.getElementById('contextLearningStyle').value = learningStyle;
                 document.getElementById('contextAdditional').value = additional;
 
                 log(`📋 Loaded existing learning profile`, 'success');
+                updateContextPreview();
             } catch (error) {
                 log(`❌ Failed to load existing context: ${error.message}`, 'error');
+                console.error('Full error:', error);
             }
         }
 
@@ -526,7 +582,7 @@ Informasi tambahan: ${additional}`;
             try {
                 if (currentUserContextId) {
                     // Update existing context
-                    const response = await fetch(`http://10.101.20.220:8000/user-contexts/${currentUserContextId}`, {
+                    const response = await fetch(`${API_BASE_URL}/user-contexts/${currentUserContextId}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ user_context: contextText })
@@ -537,7 +593,7 @@ Informasi tambahan: ${additional}`;
                     }
                 } else {
                     // Create new context
-                    const response = await fetch('http://10.101.20.220:8000/user-contexts/', {
+                    const response = await fetch(`${API_BASE_URL}/user-contexts/`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -590,7 +646,7 @@ Informasi tambahan: ${additional}`;
         async function loadUsers() {
             try {
                 log('🔄 Loading users...');
-                const response = await fetch('http://10.101.20.220:8000/users/');
+                const response = await fetch(`${API_BASE_URL}/users/`);
                 const data = await response.json();
                 users = data.users;
 
@@ -613,7 +669,7 @@ Informasi tambahan: ${additional}`;
         async function loadCourses() {
             try {
                 log('🔄 Loading courses...');
-                const response = await fetch('http://10.101.20.220:8000/courses/');
+                const response = await fetch(`${API_BASE_URL}/courses/`);
                 const data = await response.json();
                 courses = data.courses;
 
@@ -681,7 +737,7 @@ Informasi tambahan: ${additional}`;
             try {
                 log('🔄 Creating chatroom...', 'info');
 
-                const response = await fetch('http://10.101.20.220:8000/chatrooms/', {
+                const response = await fetch(`${API_BASE_URL}/chatrooms/`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -726,7 +782,7 @@ Informasi tambahan: ${additional}`;
             updateStatus('connecting', 'Connecting to WebSocket...');
             log('🔄 Connecting to WebSocket...', 'info');
 
-            const wsUrl = 'ws://10.101.20.220:8000/ws/stream';
+            const wsUrl = `${WS_URL}/ws/stream`;
             const url = new URL(wsUrl);
             url.searchParams.set('user_id', currentUserId);
             url.searchParams.set('course_id', currentCourseId);
@@ -859,15 +915,47 @@ Informasi tambahan: ${additional}`;
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                 }
 
-            } else if (data.type === 'chat_complete') {
+            } else if (data.type === 'chat_response') {  // 🎯 NEW: Handle final ChatResponse
                 if (currentStreamingMessage) {
                     const contentDiv = currentStreamingMessage.querySelector('.message-content');
                     const timestampDiv = currentStreamingMessage.querySelector('.timestamp');
 
                     contentDiv.textContent = data.response;
-                    timestampDiv.textContent = `Completed in ${data.latency_ms}ms`;
+                    
+                    // Display metadata
+                    timestampDiv.innerHTML = `
+                        <div>⏱️ ${data.latency_ms}ms | 
+                        ${data.cached ? 'Cached' : 'Fresh'} | 
+                        ${data.metadata.model_used}</div>
+                        <div>📊 Tokens: ${data.token_usage.total_tokens} | 
+                        💰 Cost: $${data.metadata.cost_usd.toFixed(6)}</div>
+                    `;
 
                     currentStreamingMessage.classList.remove('streaming');
+                    
+                    // Display sources if available
+                    if (data.sources && data.sources.length > 0) {
+                        const sourcesDiv = document.createElement('div');
+                        sourcesDiv.className = 'sources-container';
+                        sourcesDiv.innerHTML = '<strong>📚 Sources:</strong>';
+                        
+                        data.sources.forEach((source, idx) => {
+                            const sourceItem = document.createElement('div');
+                            sourceItem.className = 'source-item';
+                            sourceItem.innerHTML = `
+                                <div class="source-header">
+                                    <span>📄 ${source.metadata.filename}</span>
+                                    <span>Page ${source.metadata.page}</span>
+                                    <span>${(source.metadata.score * 100).toFixed(1)}%</span>
+                                </div>
+                                <div class="source-content">${source.content.substring(0, 100)}...</div>
+                            `;
+                            sourcesDiv.appendChild(sourceItem);
+                        });
+                        
+                        currentStreamingMessage.appendChild(sourcesDiv);
+                    }
+                    
                     currentStreamingMessage = null;
                 }
 

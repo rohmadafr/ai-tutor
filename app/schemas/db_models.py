@@ -935,7 +935,7 @@ class Message(Base):
     user_id = Column(String(36), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
 
     # Message content
-    message_text = Column(Text, nullable=False)
+    message_text = Column(Text, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.datetime.utcnow, server_default=text("now()"))

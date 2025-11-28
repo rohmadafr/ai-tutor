@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from sqlalchemy import select, and_, or_
 import time
+import datetime
 
 from ..core.database import async_db
 from ..core.logger import api_logger
@@ -94,7 +95,7 @@ class AsyncCRUD:
 
     @staticmethod
     async def get_by_id(context_id: str) -> Optional[UserContext]:
-        """Get user context by ID"""
+        """Get user context by ID - returns detached object"""
         async with async_db.get_session() as db:
             result = await db.execute(select(UserContext).where(UserContext.context_id == context_id))
             return result.scalar_one_or_none()
@@ -183,14 +184,17 @@ class AsyncCRUD:
     async def update(context_id: str, update_data: dict) -> Optional[UserContext]:
         """Update user context"""
         async with async_db.get_session() as db:
-            context = await AsyncCRUD.get_by_id(context_id)
+            # Fetch object in the same session
+            result = await db.execute(select(UserContext).where(UserContext.context_id == context_id))
+            context = result.scalar_one_or_none()
+
             if not context:
                 return None
 
             for key, value in update_data.items():
                 setattr(context, key, value)
 
-            context.updated_at = time.time()
+            context.updated_at = datetime.datetime.utcnow()
             await db.commit()
             await db.refresh(context)
 
