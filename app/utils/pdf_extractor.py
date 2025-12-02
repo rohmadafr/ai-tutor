@@ -212,9 +212,10 @@ class PDFExtractor:
                     details={"file": str(file_path)}
                 )
 
-            # 5. Ensure semua chunks punya filename
+            # 5. Ensure semua chunks punya filename dan filepath
             for chunk in chunks:
                 chunk.metadata['filename'] = display_filename
+                chunk.metadata['filepath'] = str(file_path)  # Add filepath to metadata
 
             # 6. Analyze dan log hasil
             analysis = self._analyze_chunks(chunks)

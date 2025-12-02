@@ -27,6 +27,7 @@ class DocumentChunk(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Chunk metadata")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     vector_distance: Optional[float] = Field(None, description="Distance score from search (lower = more similar)")
+    filepath: Optional[str] = Field(None, description="File path or URL for accessing the material")
 
 
 class SearchResult(BaseModel):

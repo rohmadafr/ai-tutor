@@ -279,6 +279,7 @@ async def handle_chat_request_stream(
                 total_tokens = metadata.get("total_tokens", input_tokens + output_tokens)  # Calculate if not provided
                 cost_usd = metadata.get("cost_usd", 0.0)
 
+                
                 # Store full metadata for final response
                 response_metadata = metadata
 

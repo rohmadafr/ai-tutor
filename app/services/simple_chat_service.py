@@ -43,6 +43,15 @@ class SimpleChatService:
     ):
         """Track chat interaction using existing db_models methods - NO REDUNDANCY"""
         try:
+            # Filter out out-of-context responses from database tracking
+            source_type = response_data.get("source_type", "")
+
+            # Debug log untuk cek source_type
+        
+            # Skip tracking for OOT responses to avoid polluting database
+            if source_type == "out_of_context":
+                chat_logger.info(f"Skipping database tracking for out-of-context response")
+                return
             from ..schemas.db_models import RequestTracking, Message, Response
             from ..core.database import async_db
 
@@ -164,9 +173,13 @@ class SimpleChatService:
             cached_result = await self.cache_service.query(query, user_id, course_id)
             cache_query_time_ms = (time.time() - cache_query_start_time) * 1000
 
-            if cached_result is not None:
+            if cached_result is not None and cached_result.get("cache_status") != "miss":
                 # Cache hit scenario
                 chat_logger.info(f"Cache HIT for user={user_id}, course={course_id}")
+
+                # Extract sources from cached result (returned by custom_cache_service.query)
+                cached_sources = cached_result.get("sources", [])
+                cached_response = cached_result.get("response", "")
 
                 if use_personalization:
                     # Cache hit + Personalized streaming response - PANGGIL RAGService!
@@ -181,8 +194,9 @@ class SimpleChatService:
                         personalization_token_data = {}
 
                         # Get personalization generator with new metadata format
+                        # Pass only the response string, not the full dictionary
                         personalization_gen = self.new_rag_service._personalize_response_stream(
-                            cached_result, user_context_text, history_text, query
+                            cached_response, user_context_text, history_text, query, cached_sources
                         )
 
                         # Process streaming items with metadata
@@ -194,13 +208,29 @@ class SimpleChatService:
                                 full_response += item["data"]
                                 yield item["data"]
                             elif item["type"] == "metadata":
-                                # Capture token data for tracking
-                                personalization_token_data = item["data"]
+                                # Capture token data for tracking - ensure it's a dictionary
+                                item_data = item["data"]
+                                if isinstance(item_data, dict):
+                                    personalization_token_data = item_data
+                                    # Merge source documents from cache into personalization metadata
+                                    if cached_sources and "source_documents" not in personalization_token_data:
+                                        personalization_token_data["source_documents"] = cached_sources
+                                else:
+                                    chat_logger.warning(f"Expected dictionary for personalization metadata, got {type(item_data)}: {item_data}")
+                                    personalization_token_data = {"source_documents": cached_sources}
+
+                                # Forward personalization metadata to WebSocket
+                                yield item
                             elif item["type"] == "error":
                                 # Handle errors
                                 yield item["data"]
 
                         personalization_time_ms = (time.time() - personalization_start_time) * 1000
+
+                        # Ensure personalization_token_data is a dictionary before using .get()
+                        if not isinstance(personalization_token_data, dict):
+                            chat_logger.warning(f"personalization_token_data is not a dictionary: {type(personalization_token_data)}, resetting to empty dict")
+                            personalization_token_data = {}
 
                         # Track personalized cache hit interaction
                         result_data = {
@@ -219,14 +249,15 @@ class SimpleChatService:
                             "input_tokens": personalization_token_data.get("input_tokens", 0),
                             "output_tokens": personalization_token_data.get("output_tokens", 0),
                             "total_tokens": personalization_token_data.get("total_tokens", 0),
-                            "cost_usd": personalization_token_data.get("cost_usd", 0.0)
+                            "cost_usd": personalization_token_data.get("cost_usd", 0.0),
+                            "source_documents": cached_sources  # ✅ Include sources from cache in final response
                         }
 
                         await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id, is_streaming=True)
                     else:
                         # No context, return raw cached response + track
                         result_data = {
-                            "response": cached_result,
+                            "response": cached_response,
                             "source": "cache_raw",
                             "cached": True,
                             "personalized": False,
@@ -239,18 +270,35 @@ class SimpleChatService:
                             "latency_ms": cache_query_time_ms,
                             "input_tokens": 0,  # Cache hit = no LLM tokens
                             "output_tokens": 0,  # Cache hit = no LLM tokens
-                            "cost_usd": 0.0      # Cache hit = no cost
+                            "cost_usd": 0.0,    # Cache hit = no cost
+                            "source_documents": cached_sources  # ✅ Include sources from cache
                         }
 
                         # Track cache hit interaction
                         await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id, is_streaming=False)
 
-                        # Cache hit should NOT stream - return full response immediately
-                        yield cached_result
+                        # Cache hit should NOT stream content, but send metadata for WebSocket
+                        yield {
+                            "type": "metadata",
+                            "data": {
+                                "source": result_data.get("source", "cache_raw"),
+                                "source_type": result_data.get("source_type", "redis_cache"),
+                                "response_type": result_data.get("response_type", "cache_hit_raw"),
+                                "model_used": result_data.get("model_used", "cached"),
+                                "input_tokens": result_data.get("input_tokens", 0),
+                                "output_tokens": result_data.get("output_tokens", 0),
+                                "total_tokens": result_data.get("total_tokens", 0),
+                                "cost_usd": result_data.get("cost_usd", 0.0),
+                                "source_documents": result_data.get("source_documents", []),
+                                "personalized": result_data.get("personalized", False)
+                            }
+                        }
+                        # Then yield the cached response
+                        yield cached_response
                 else:
                     # Cache hit + Raw response (single chunk) + track
                     result_data = {
-                        "response": cached_result,
+                        "response": cached_response,  # Use extracted cached_response
                         "source": "cache_raw",
                         "cached": True,
                         "personalized": False,
@@ -260,14 +308,31 @@ class SimpleChatService:
                         "model_used": "cached",
                         "response_type": "cache_hit_raw",
                         "source_type": "redis_cache",
-                        "latency_ms": cache_query_time_ms
+                        "latency_ms": cache_query_time_ms,
+                        "source_documents": cached_sources  # ✅ Include sources from cache
                     }
 
                     # Track cache hit interaction
                     await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id, is_streaming=False)
 
-                    # Cache hit should NOT stream - return full response immediately
-                    yield cached_result
+                    # Cache hit should NOT stream content, but send metadata for WebSocket
+                    yield {
+                        "type": "metadata",
+                        "data": {
+                            "source": result_data.get("source", "cache_raw"),
+                            "source_type": result_data.get("source_type", "redis_cache"),
+                            "response_type": result_data.get("response_type", "cache_hit_raw"),
+                            "model_used": result_data.get("model_used", "cached"),
+                            "input_tokens": result_data.get("input_tokens", 0),
+                            "output_tokens": result_data.get("output_tokens", 0),
+                            "total_tokens": result_data.get("total_tokens", 0),
+                            "cost_usd": result_data.get("cost_usd", 0.0),
+                            "source_documents": result_data.get("source_documents", []),
+                            "personalized": result_data.get("personalized", False)
+                        }
+                    }
+                    # Then yield cached response
+                    yield cached_response
 
                 return
 
@@ -278,6 +343,7 @@ class SimpleChatService:
             rag_start_time = time.time()
             full_response = ""
             rag_token_data = {}
+            general_response = ""  # Store the general response for caching (only when personalization is requested)
 
             async for item in self.new_rag_service.generate_response_stream(
                 question=query,
@@ -288,11 +354,20 @@ class SimpleChatService:
             ):
                 if item["type"] == "content":
                     # Yield content chunks for streaming
+                    # These are now either general response (no personalization) or personalized response
                     full_response += item["data"]
                     yield item["data"]
                 elif item["type"] == "metadata":
-                    # Capture token data for tracking
-                    rag_token_data = item["data"]
+                    # Capture token data for tracking - ensure it's a dictionary
+                    item_data = item["data"]
+                    if isinstance(item_data, dict):
+                        rag_token_data = item_data
+                        # Check if this metadata includes the general_response (for personalization cases)
+                        if "general_response" in item_data and item_data["general_response"]:
+                            general_response = item_data["general_response"]
+                    else:
+                        chat_logger.warning(f"Expected dictionary for metadata, got {type(item_data)}: {item_data}")
+                        rag_token_data = {}
                 elif item["type"] == "error":
                     # Handle errors
                     yield item["data"]
@@ -300,6 +375,11 @@ class SimpleChatService:
             rag_time_ms = (time.time() - rag_start_time) * 1000
 
             # Track RAG streaming interaction with real token data
+            # Ensure rag_token_data is a dictionary before using .get()
+            if not isinstance(rag_token_data, dict):
+                chat_logger.warning(f"rag_token_data is not a dictionary: {type(rag_token_data)}, resetting to empty dict")
+                rag_token_data = {}
+
             result_data = {
                 "response": full_response,
                 "source": rag_token_data.get("source", "rag"),
@@ -321,23 +401,36 @@ class SimpleChatService:
 
             await self._track_chat_interaction(query, result_data, user_id, course_id, chatroom_id, is_streaming=True)
 
-            # Step 2: Store complete response in cache (non-streaming)
-            if full_response.strip():
+            # Store GENERAL response in cache for future use (not personalized response)
+            response_to_cache = general_response if general_response else full_response
+
+            if response_to_cache.strip():
                 try:
-                    embedding = await self.cache_service.generate_embedding(query)
-                    await self.cache_service.store_response(
-                        prompt=query,
-                        response=full_response,
-                        embedding=embedding,
-                        user_id=user_id or "anonymous",
-                        model=settings.openai_model_comprehensive,
-                        course_id=course_id
-                    )
-                    chat_logger.info(f"Response cached for user={user_id}, course={course_id}")
+                    # Reuse embedding from cache miss
+                    embedding = cached_result.get("embedding") if cached_result else None
+                    if embedding:
+                        chat_logger.info(f"Reusing embedding from cache miss - storing {'general' if use_personalization and general_response else 'non-personalized'} response")
+
+                        # Extract sources from RAG response for cache storage
+                        source_documents = rag_token_data.get("source_documents", [])
+
+                        await self.cache_service.store_response(
+                            prompt=query,
+                            response=response_to_cache,  # Store general response, not personalized
+                            embedding=embedding,
+                            user_id=user_id or "anonymous",
+                            model=rag_token_data.get("model_used", settings.openai_model_comprehensive),
+                            course_id=course_id,
+                            sources=source_documents
+                        )
+                        chat_logger.info(f"RAG response cached for user={user_id}, course={course_id} - {'with personalization requested' if use_personalization else 'no personalization'}")
+                    else:
+                        chat_logger.warning("No embedding available for cache storage")
                 except Exception as cache_error:
-                    chat_logger.warning(f"Failed to cache response: {cache_error}")
+                    chat_logger.warning(f"Failed to cache RAG response: {cache_error}")
 
             # Yield final accumulated metadata for WebSocket clients
+            # This ensures metadata is always sent, regardless of personalization
             yield {
                 "type": "metadata",
                 "data": {
@@ -418,6 +511,11 @@ class SimpleChatService:
                 # Cache hit scenario
                 chat_logger.info(f"Cache HIT for user={user_id}, course={course_id}")
 
+                # Extract sources from cached result (returned by custom_cache_service.query)
+                cached_sources = cached_result.get("sources", [])
+                cached_response = cached_result.get("response", "")
+
+                
                 if use_personalization:
                     # Cache hit + Personalized response - PANGGIL RAGService!
                     user_context_text, history_text = await self._get_context_components(
@@ -426,8 +524,9 @@ class SimpleChatService:
 
                     if user_context_text or history_text:
                         personalization_start_time = time.time()
+                        # Pass only the response string, not the full dictionary
                         personalized_result = await self.new_rag_service._personalize_response(
-                            cached_result, user_context_text, history_text, query
+                            cached_response, user_context_text, history_text, query, cached_sources
                         )
                         personalization_time_ms = (time.time() - personalization_start_time) * 1000
 
@@ -454,7 +553,8 @@ class SimpleChatService:
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
                             "total_tokens": total_tokens,
-                            "cost_usd": cost_usd
+                            "cost_usd": cost_usd,
+                            "source_documents": cached_sources  # ✅ Use sources from cache query result
                         }
 
                         # Track cache hit + personalization interaction
@@ -464,13 +564,14 @@ class SimpleChatService:
                     else:
                         # No context available
                         return {
-                            "response": cached_result,
+                            "response": cached_response,  # Use extracted cached_response
                             "source": "cache_raw",
                             "cached": True,
                             "personalized": False,
                             "user_id": user_id,
                             "course_id": course_id,
-                            "chatroom_id": chatroom_id
+                            "chatroom_id": chatroom_id,
+                            "source_documents": cached_sources  # ✅ Include sources from cache
                         }
                 else:
                     # Cache hit + Raw response
@@ -480,7 +581,7 @@ class SimpleChatService:
                     actual_cache_time_ms = (time.time() - cache_start_time) * 1000
 
                     result_data = {
-                        "response": cached_result,
+                        "response": cached_response,  # Use extracted cached_response
                         "source": "cache_raw",
                         "cached": True,
                         "personalized": False,
@@ -490,7 +591,8 @@ class SimpleChatService:
                         "model_used": "cached",
                         "response_type": "cache_hit_raw",
                         "source_type": "redis_cache",
-                        "latency_ms": cache_query_time_ms
+                        "latency_ms": cache_query_time_ms,
+                        "source_documents": cached_sources  # ✅ Include sources from cache
                     }
 
                     # Track cache hit interaction
@@ -553,15 +655,19 @@ class SimpleChatService:
             if general_response.strip():
                 try:
                     embedding = await self.cache_service.generate_embedding(query)
+                    # Extract sources from RAG response for cache storage
+                    source_documents = rag_response.get("source_documents", [])
+
                     await self.cache_service.store_response(
                         prompt=query,
                         response=general_response,
                         embedding=embedding,
                         user_id=user_id or "anonymous",
                         model=model_used,
-                        course_id=course_id
+                        course_id=course_id,
+                        sources=source_documents  
                     )
-                    chat_logger.info(f"General response cached for user={user_id}, course={course_id}")
+                    chat_logger.info(f"General response cached for user={user_id}, course={course_id} with {len(source_documents)} sources")
                 except Exception as cache_error:
                     chat_logger.warning(f"Failed to cache general response: {cache_error}")
 
@@ -574,7 +680,7 @@ class SimpleChatService:
 
                 if user_context_text or history_text:
                     personalized_result = await self.new_rag_service._personalize_response(
-                        general_response, user_context_text, history_text, query
+                        general_response, user_context_text, history_text, query, source_documents
                     )
                     final_response = personalized_result["response"]
                     final_model = personalized_result["model_used"]
@@ -596,7 +702,7 @@ class SimpleChatService:
                 "model_used": final_model,
                 "response_type": "rag_response",
                 "source_type": "knowledge_base",
-                "source_documents": rag_response.get("source_documents", []),
+                "source_documents": personalized_result.get("source_documents", rag_response.get("source_documents", [])),
                 "latency_ms": rag_response.get("latency_ms", 0),
                 "input_tokens": rag_input_tokens,  # Only input tokens
                 "output_tokens": rag_output_tokens, # Only output tokens

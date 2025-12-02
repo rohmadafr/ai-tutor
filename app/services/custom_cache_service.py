@@ -15,7 +15,6 @@ from redisvl.utils.vectorize import OpenAITextVectorizer
 from ..config.settings import settings
 from ..core.logger import cache_logger
 from ..core.telemetry import TokenCounter, TelemetryLogger
-from ..core.llm_client import LLMClient
 
 class CustomCacheService:
     """
@@ -36,9 +35,6 @@ class CustomCacheService:
 
         self.token_counter = TokenCounter()
         self.telemetry = TelemetryLogger()
-
-        # Initialize LLM client (matching reference notebook pattern)
-        self.llm = LLMClient(self.token_counter)
 
         # Cache configuration
         self.cache_ttl = settings.cache_ttl or 3600
@@ -73,6 +69,9 @@ class CustomCacheService:
                 {"name": "prompt", "type": "text"},
                 {"name": "model", "type": "tag"},
                 {"name": "created_at", "type": "numeric"},
+
+                # Source information from RAG - stored as JSON string (array of objects)
+                {"name": "sources", "type": "text"},
 
                 # Vector field - using prompt_vector as in reference
                 {
@@ -154,7 +153,8 @@ class CustomCacheService:
         await self._ensure_connection()
 
         try:
-            return_fields = ["response", "user_id", "course_id", "prompt", "model", "created_at"]
+            import json
+            return_fields = ["response", "user_id", "course_id", "prompt", "model", "created_at", "sources"]
             query = VectorQuery(
                 vector=embedding,
                 vector_field_name="prompt_vector",  # Using prompt_vector as in reference
@@ -173,28 +173,36 @@ class CustomCacheService:
                     # Handle floating point precision issues with negative zero
                     if score_float is not None:
                         # Convert -0.0000 to 0.0000 for proper comparison
-                        if abs(score_float) < 1e-8:
+                        if abs(score_float) < 1e-10:
                             score_float = 0.0
                         if score_float <= distance_threshold:
                             cache_logger.info(f"🎯 Cache hit with distance: {score_float:.4f}")
-                            return {field: getattr(first, field, '') for field in return_fields}
+                            result = {field: getattr(first, field, '') for field in return_fields}
+                            # Parse sources from JSON string
+                            if result.get("sources"):
+                                try:
+                                    result["sources"] = json.loads(result["sources"])
+                                except json.JSONDecodeError as e:
+                                    cache_logger.error(f"Cache HIT sources JSON decode error: {e}")
+                                    result["sources"] = []
+                            else:
+                                result["sources"] = []
+                                cache_logger.warning("Cache HIT sources field is missing or empty")
+                            return result
                 except (ValueError, TypeError):
-                    cache_logger.info(f"🔍 Invalid score format: {score}")
                     pass
-
-            cache_logger.info("🔍 Cache miss: no suitable entries found")
             return None
-
         except Exception as e:
             cache_logger.error(f"Cache search failed: {e}")
             return None
 
-    async def store_response(self, prompt: str, response: str, embedding: List[float], user_id: str, model: str, course_id: str = None):
+    async def store_response(self, prompt: str, response: str, embedding: List[float], user_id: str, model: str, course_id: str = None, sources: List[Dict] = None):
         """Store response in cache (following reference pattern)"""
         await self._ensure_connection()
 
         try:
             import numpy as np
+            import json
             vec_bytes = np.array(embedding, dtype=np.float32).tobytes()
 
             doc = {
@@ -204,7 +212,8 @@ class CustomCacheService:
                 "course_id": course_id or "global",
                 "prompt": prompt,
                 "model": model,
-                "created_at": int(time.time())
+                "created_at": int(time.time()),
+                "sources": json.dumps(sources or [])  # Always store sources (even if empty)
             }
 
             # Use unique key for each entry and set TTL
@@ -215,7 +224,7 @@ class CustomCacheService:
             if self.cache_ttl > 0:
                 await self.client.expire(key, self.cache_ttl)
 
-            cache_logger.info(f"✅ Cached response: key={key[:20]}..., user_id={user_id}, course_id={course_id}")
+            cache_logger.info(f"✅ Cached response: key={key[:20]}..., user_id={user_id}, course_id={course_id}, sources={len(sources or [])}")
             return True
 
         except Exception as e:
@@ -238,7 +247,8 @@ class CustomCacheService:
                 "model": cached_result.get("model", "unknown"),
                 "latency_ms": int((time.time() - start_time) * 1000),
                 "input_tokens": 0,
-                "output_tokens": 0
+                "output_tokens": 0,
+                "sources": cached_result.get("sources", [])
             }
 
             # Log cache hit
@@ -253,12 +263,15 @@ class CustomCacheService:
             )
 
             cache_logger.info(f"✅ Cache HIT: latency_ms={result['latency_ms']}")
-            return result["response"]
+            return result
 
         else:
-            # Cache miss - return None to let RAG handle it
+            # Cache miss - return embedding to reuse
             cache_logger.info("❌ Cache MISS")
-            return None
+            return {
+                "embedding": embedding,
+                "cache_status": "miss"
+            }
 
     async def clear_user_cache(self, user_id: str) -> int:
         """Clear cache for specific user"""

@@ -78,9 +78,8 @@ class UnifiedRAGService:
 
         Pertanyaan: {question}
 
-        Jawab pertanyaan berdasarkan konteks yang diberikan. Jika konteks tidak mengandung
-        informasi yang cukup untuk menjawab pertanyaan, katakan "Saya tidak memiliki informasi
-        yang cukup untuk menjawab pertanyaan ini."
+        Jawab pertanyaan berdasarkan konteks yang diberikan sebaik mungkin.
+        Gunakan informasi yang tersedia dan jawab secara jujur tentang keterbatasan.
 
         Jawab dalam bahasa yang sama dengan pertanyaan.
         """)
@@ -160,6 +159,7 @@ class UnifiedRAGService:
                 # Content (Text)
                 {"name": "text", "type": "text"},
                 {"name": "filename", "type": "text"},
+                {"name": "filepath", "type": "text"},
 
                 # Vector (HNSW)
                 {
@@ -310,6 +310,7 @@ class UnifiedRAGService:
                 "material_id": material_id,
                 "course_id": str(doc.metadata.get("course_id", "default")),
                 "filename": str(doc.metadata.get("filename", "unknown")),
+                "filepath": str(doc.metadata.get("filepath", "")),  # Add filepath field
                 "page": str(doc.metadata.get("page", 0))  # Use actual page number from metadata
             }
 
@@ -329,14 +330,16 @@ class UnifiedRAGService:
             # Search for similar documents using integrated method
             results = await self._search_knowledge_base(query_embedding, course_id, top_k=5)
 
-            # Convert results to Document objects for should_use_context and format_context
-            docs = []
+            # Filter relevant documents based on distance threshold
+            relevant_docs = []
             sources = []
 
             for i, result in enumerate(results):
                 content = result.get("text", "")
                 if not content.strip():
                     continue
+
+                vector_distance = 1.0 - result.get("score", 0.0)
 
                 doc = Document(
                     page_content=content,
@@ -345,20 +348,23 @@ class UnifiedRAGService:
                         "course_id": result.get("course_id", ""),
                         "filename": result.get("filename", ""),
                         "page": result.get("page", ""),
+                        "filepath": result.get("filepath", ""),
                         "score": result.get("score", 0.0),
-                        "vector_distance": 1.0 - result.get("score", 0.0)  # Convert score to distance
+                        "vector_distance": vector_distance
                     }
                 )
-                docs.append(doc)
+                relevant_docs.append(doc)
 
-                if doc.metadata.get("vector_distance", 1.0) < settings.rag_distance_threshold:
+                # Include in sources if below threshold
+                if vector_distance < settings.rag_distance_threshold:
                     sources.append({
                         "content": content,
                         "metadata": doc.metadata
                     })
 
-            # Use format_context with hybrid threshold logic
-            context = format_context(docs) if docs else "Tidak ada dokumen relevan ditemukan."
+            # Build context using quality-aware function
+            context_result = build_context(sources, relevant_docs)
+            context = context_result["context"]
 
             # Generate response using LLM with token tracking
             input_tokens = 0
@@ -391,12 +397,15 @@ class UnifiedRAGService:
                 # No context found
                 answer = "Saya tidak memiliki informasi yang cukup untuk menjawab pertanyaan ini."
 
+            # context_used should be True only if we have relevant sources (below threshold)
+            context_used = len(sources) > 0
+
             return {
                 "answer": answer,
                 "context": context,  # Add formatted context for transparency
                 "sources": sources,
                 "course_id": course_id,
-                "context_used": bool(context.strip()),
+                "context_used": context_used,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": total_tokens,
@@ -446,23 +455,18 @@ class UnifiedRAGService:
                 # Filter by both course_id AND material_id (most specific)
                 from redisvl.query.filter import FilterExpression as FE
                 filter_expression = (Tag("course_id") == course_id) & (Tag("material_id") == material_ids[0])
-                rag_logger.info("🔍 Using course+material filter: course_id=%s, material_id=%s", course_id, material_ids[0])
             elif course_id:
                 # Filter by course_id only (get all materials in course)
                 filter_expression = Tag("course_id") == course_id
-                rag_logger.info("🔍 Using course filter: course_id=%s", course_id)
             elif material_ids:
                 # Fallback to material_id filtering only
                 filter_expression = Tag("material_id") == material_ids[0]
-                rag_logger.info("🔍 Using material filter: material_id=%s", material_ids[0])
-            else:
-                rag_logger.info("🔍 No filters - searching all documents")
 
             # Create VectorQuery following RedisVL best practices
             vector_query = VectorQuery(
                 vector=query_vector,
                 vector_field_name="vector",
-                return_fields=["text", "material_id", "course_id", "filename", "page"],
+                return_fields=["text", "material_id", "course_id", "filename", "filepath", "page"],
                 num_results=top_k,
                 return_score=True
             )
@@ -470,16 +474,12 @@ class UnifiedRAGService:
             # Apply filter expression if we have one (course-based or file-based)
             if filter_expression:
                 vector_query.filter_expression = filter_expression
-                rag_logger.info("🔍 Applied filter expression to vector query")
             elif material_ids:
                 # Fallback to legacy file hash filtering
                 vector_query.filter_expression = self._build_filter_expression(material_ids)
-                rag_logger.info("🔍 Applied legacy material filter expression")
 
             # Execute search
             result = await self.index.search(vector_query.query, query_params=vector_query.params)
-
-            rag_logger.info("🔍 VECTOR SEARCH RESULTS: found %d documents total", len(result.docs))
 
             # Process results - take all top_k results (no threshold filtering)
             documents = []
@@ -491,8 +491,6 @@ class UnifiedRAGService:
                 except (ValueError, TypeError):
                     distance = 1.0
 
-                rag_logger.info("   📄 Document: material_id=%s, vector_distance=%.4f", getattr(doc, "material_id", "unknown"), distance)
-
                 # RedisVL VectorQuery returns COSINE DISTANCE
                 # Take all results from top_k (no threshold filtering)
                 documents.append({
@@ -500,6 +498,7 @@ class UnifiedRAGService:
                     "material_id": getattr(doc, "material_id", ""),
                     "course_id": getattr(doc, "course_id", ""),
                     "filename": getattr(doc, "filename", ""),
+                    "filepath": getattr(doc, "filepath", ""),
                     "page": getattr(doc, "page", ""),
                     "score": 1.0 - distance,  # Convert distance to similarity score
                     "vector_distance": distance
@@ -564,7 +563,7 @@ class UnifiedRAGService:
             filter_expr = Tag("course_id") == course_id
 
             filter_query = FilterQuery(
-                return_fields=["text", "material_id", "course_id", "filename", "page"],
+                return_fields=["text", "material_id", "course_id", "filename", "filepath", "page"],
                 filter_expression=filter_expr,
                 num_results=limit
             )
@@ -579,6 +578,7 @@ class UnifiedRAGService:
                     "material_id": getattr(doc, "material_id", ""),
                     "course_id": getattr(doc, "course_id", ""),
                     "filename": getattr(doc, "filename", ""),
+                    "filepath": getattr(doc, "filepath", ""),
                     "page": getattr(doc, "page", "")
                 })
 
@@ -597,7 +597,7 @@ class UnifiedRAGService:
             filter_expr = Tag("material_id") == material_id
 
             filter_query = FilterQuery(
-                return_fields=["text", "material_id", "course_id", "filename", "page"],
+                return_fields=["text", "material_id", "course_id", "filename", "filepath", "page"],
                 filter_expression=filter_expr,
                 num_results=limit
             )
@@ -612,6 +612,7 @@ class UnifiedRAGService:
                     "material_id": getattr(doc, "material_id", ""),
                     "course_id": getattr(doc, "course_id", ""),
                     "filename": getattr(doc, "filename", ""),
+                    "filepath": getattr(doc, "filepath", ""),
                     "page": getattr(doc, "page", "")
                 })
 
@@ -719,277 +720,58 @@ class UnifiedRAGService:
 # Global singleton instance (maintaining compatibility)
 unified_rag_service = UnifiedRAGService()
 
+# =====================================
+# HELPER FUNCTIONS
+# =====================================
 
-# =================================================================
-# LCEL PATTERN IMPLEMENTATION
-# =================================================================
-# LangChain Expression Language pattern with hybrid threshold logic
-# =================================================================
-
-def should_use_context(docs: List[Document], threshold: float = None) -> bool:
+def build_context(sources: List[Dict], relevant_docs: List[Document]) -> Dict[str, Any]:
     """
-    Check if we should use context based on hybrid logic:
-    - Always use the best document (doc[0])
-    - Only use full context if docs 1-4 have good scores
+    Build context based on available sources with quality-aware approach
     """
     from ..config.settings import settings
 
-    # Use settings threshold if not provided
-    if threshold is None:
-        threshold = settings.rag_distance_threshold
+    if not sources:
+        return {
+            "context_quality": "bad",
+            "context": "",
+            "disclaimer": "",
+            "sources_for_response": []
+        }
+    elif len(sources) <= 2:
+        # Quality = "low" - focused context with disclaimer
+        best_docs = [doc for doc in relevant_docs
+                     if doc.metadata.get("vector_distance", 1.0) < settings.rag_distance_threshold][:2]
 
-    if not docs:
-        return False
+        context = "\n\n".join([
+            f"Dokumen {i+1}:\n{doc.page_content.strip()}"
+            for i, doc in enumerate(best_docs)
+        ])
 
-    # If we have less than 3 docs, use what we have
-    if len(docs) < 3:
-        return True
+        # Dynamic disclaimer for limited information
+        disclaimer = "Catatan: Jawablah berdasarkan sumber informasi terbatas dari course ini."
 
-    # Check if secondary docs (1-4) have good scores
-    for doc in docs[1:4]:
-        if doc.metadata.get("vector_distance", 1.0) < threshold:
-            return True
+        return {
+            "context_quality": "low",
+            "context": context,
+            "disclaimer": disclaimer,
+            "sources_for_response": best_docs
+        }
+    else:  # len(sources) >= 3
+        # Quality = "cukup" - comprehensive context
+        context = "\n\n".join([
+            f"Dokumen {i+1} (score: {doc.metadata['score']:.3f}, distance: {doc.metadata['vector_distance']:.3f}):\n{doc.page_content.strip()}"
+            for i, doc in enumerate(relevant_docs)
+        ])
 
-    return False
-
-
-def format_context(docs: List[Document], threshold: float = None) -> str:
-    """Format documents to context string with hybrid logic"""
-    from ..config.settings import settings
-
-    # Use settings threshold if not provided
-    if threshold is None:
-        threshold = settings.rag_distance_threshold
-
-    if not docs:
-        return "Tidak ada dokumen relevan ditemukan."
-
-    # Always include the best document
-    best_doc = docs[0]
-    context_parts = [f"Dokumen 1 (score: {best_doc.metadata.get('score', 0):.3f}):\n{best_doc.page_content}"]
-
-    # Add secondary docs only if they have good scores
-    if should_use_context(docs, threshold):
-        for i, doc in enumerate(docs[1:4], 2):  # docs 1-3 -> docs 2-4
-            score = doc.metadata.get("score", 0.0)
-            distance = doc.metadata.get("vector_distance", 1.0)
-            if distance < threshold:
-                context_parts.append(f"Dokumen {i} (score: {score:.3f}):\n{doc.page_content}")
-
-    return "\n\n".join(context_parts)
-
-
-# class LCELRAGService:
-#     """LCEL-enhanced RAG service with hybrid threshold logic - using existing methods directly"""
-
-#     def __init__(self, rag_service: Optional[UnifiedRAGService] = None):
-#         from ..config.settings import settings
-
-#         self.rag_service = rag_service or unified_rag_service
-#         self.rag_threshold = settings.rag_distance_threshold  # Use settings threshold
-
-#         # Create prompt template
-#         self.rag_prompt = ChatPromptTemplate.from_template("""
-#         Anda adalah AI Tutor Assistant yang membantu menjawab pertanyaan user pada sebuah Learning Management System
-#         berdasarkan konteks atau knowledge base pada course yang diberikan.
-
-#         Konteks:
-#         {context}
-
-#         Pertanyaan: {question}
-
-#         Jawab pertanyaan berdasarkan konteks yang diberikan. Jika konteks tidak mengandung
-#         informasi yang cukup untuk menjawab pertanyaan, katakan "Saya tidak memiliki informasi
-#         yang cukup untuk menjawab pertanyaan ini."
-
-#         Jawab dalam bahasa yang sama dengan pertanyaan.
-#         """)
-
-#         # Output parser
-#         self.output_parser = StrOutputParser()
-
-#         rag_logger.info("LCELRAGService initialized")
-
-#     async def _retrieve_documents(self, query: str, course_id: Optional[str] = None, top_k: int = 5) -> List[Document]:
-#         """
-#         Retrieve documents directly using existing UnifiedRAGService methods.
-#         Hybrid logic: top_k=5 + threshold validation for docs 1-3
-#         """
-#         try:
-#             await self.rag_service._ensure_connection()
-
-#             # Generate query embedding using existing embeddings
-#             query_embedding = await self.rag_service.embeddings.aembed_query(query)
-
-#             # Search using existing method
-#             results = await self.rag_service._search_knowledge_base(
-#                 query_vector=query_embedding,
-#                 course_id=course_id,
-#                 top_k=top_k
-#             )
-
-#             # Convert RedisVL results to LangChain Documents
-#             documents = []
-#             for result in results:
-#                 content = result.get("text", "")
-#                 metadata = {
-#                     "material_id": result.get("material_id", ""),
-#                     "course_id": result.get("course_id", ""),
-#                     "filename": result.get("filename", ""),
-#                     "score": result.get("score", 0.0),
-#                     "vector_distance": result.get("vector_distance", 1.0)
-#                 }
-#                 documents.append(Document(page_content=content, metadata=metadata))
-
-#             rag_logger.info(f"Retrieved {len(documents)} documents for query: {query[:50]}...")
-#             return documents
-
-#         except Exception as e:
-#             rag_logger.error(f"Document retrieval failed: {e}")
-#             return []
-
-#     def _create_rag_chain(self, documents: List[Document], threshold: float):
-#         """
-#         Create LCEL RAG chain with hybrid threshold logic.
-#         Documents already retrieved, now create processing chain.
-#         """
-#         # Format context using hybrid logic
-#         context = format_context(documents, threshold)
-
-#         # LCEL chain: context + question -> prompt -> llm -> parser
-#         rag_chain = (
-#             RunnableParallel({
-#                 "context": lambda _: context,
-#                 "question": RunnablePassthrough()
-#             })
-#             | self.rag_prompt
-#             | self.rag_service.llm
-#             | self.output_parser
-#         )
-
-#         return rag_chain
-
-#     async def query(self, question: str, course_id: Optional[str] = None,
-#                    rag_threshold: Optional[float] = None, top_k: int = 5) -> Dict[str, Any]:
-#         """Query using LCEL pattern with hybrid threshold logic"""
-#         try:
-#             start_time = time.time()
-#             threshold = rag_threshold or self.rag_threshold
-
-#             # Step 1: Retrieve documents (top_k=5 with hybrid threshold)
-#             documents = await self._retrieve_documents(question, course_id, top_k)
-
-#             if not documents:
-#                 return {
-#                     "answer": "Saya tidak memiliki informasi yang cukup untuk menjawab pertanyaan ini.",
-#                     "sources": [],
-#                     "course_id": course_id,
-#                     "context_used": False,
-#                     "context_quality": "none",
-#                     "rag_threshold": threshold,
-#                     "latency_ms": (time.time() - start_time) * 1000,
-#                     "method": "lcel_no_docs"
-#                 }
-
-#             # Step 2: Create and execute RAG chain
-#             rag_chain = self._create_rag_chain(documents, threshold)
-#             answer = await rag_chain.ainvoke(question)
-
-#             # Step 3: Determine context quality using hybrid logic
-#             used_context = should_use_context(documents, threshold)
-#             context_quality = "comprehensive" if used_context else "limited"
-
-#             # Step 4: Format sources (filtered by hybrid logic)
-#             sources = []
-
-#             # Always include the best document (doc[0])
-#             if documents:
-#                 sources.append({
-#                     "content": documents[0].page_content,
-#                     "metadata": documents[0].metadata
-#                 })
-
-#             # Add secondary docs only if they pass threshold
-#             if used_context:  # This means docs[1:4] have good scores
-#                 for doc in documents[1:4]:  # docs 1-3 -> docs 2-4
-#                     distance = doc.metadata.get("vector_distance", 1.0)
-#                     if distance < threshold:
-#                         sources.append({
-#                             "content": doc.page_content,
-#                             "metadata": doc.metadata
-#                         })
-
-#             response_time = (time.time() - start_time) * 1000
-#             rag_logger.info(f"LCEL query completed in {response_time:.2f}ms, quality={context_quality}")
-
-#             return {
-#                 "answer": answer,
-#                 "sources": sources,
-#                 "course_id": course_id,
-#                 "context_used": True,
-#                 "context_quality": context_quality,
-#                 "rag_threshold": threshold,
-#                 "latency_ms": response_time,
-#                 "method": "lcel"
-#             }
-
-#         except Exception as e:
-#             rag_logger.error(f"LCEL query failed: {e}")
-#             return {
-#                 "answer": "Maaf, terjadi kesalahan saat memproses pertanyaan.",
-#                 "sources": [],
-#                 "course_id": course_id,
-#                 "context_used": False,
-#                 "error": str(e),
-#                 "method": "lcel_error"
-#             }
-
-#     async def stream(self, question: str, course_id: Optional[str] = None,
-#                     rag_threshold: Optional[float] = None, top_k: int = 5):
-#         """Streaming version of LCEL query with hybrid threshold logic"""
-#         try:
-#             threshold = rag_threshold or self.rag_threshold
-
-#             # Step 1: Retrieve documents first (non-streaming part)
-#             documents = await self._retrieve_documents(question, course_id, top_k)
-
-#             if not documents:
-#                 yield "Saya tidak memiliki informasi yang cukup untuk menjawab pertanyaan ini."
-#                 return
-
-#             # Step 2: Create streaming chain with pre-retrieved context
-#             context = format_context(documents, threshold)
-#             streaming_chain = (
-#                 RunnableParallel({
-#                     "context": lambda _: context,
-#                     "question": RunnablePassthrough()
-#                 })
-#                 | self.rag_prompt
-#                 | self.rag_service.llm
-#                 | self.output_parser
-#             )
-
-#             # Step 3: Stream LLM response
-#             async for chunk in streaming_chain.astream(question):
-#                 if chunk:
-#                     yield chunk
-
-#         except Exception as e:
-#             rag_logger.error(f"LCEL streaming failed: {e}")
-#             yield f"Error: {str(e)}"
-
-#     def set_threshold(self, threshold: float):
-#         """Update RAG threshold"""
-#         self.rag_threshold = threshold
-#         rag_logger.info(f"RAG threshold updated to {threshold}")
-
-
-# # Global LCEL service instance
-# lcel_rag_service = LCELRAGService()
-
+        return {
+            "context_quality": "cukup",
+            "context": context,
+            "disclaimer": "",
+            "sources_for_response": relevant_docs
+        }
 
 # =====================================
-# INTEGRASI RAGService + Database + LCEL
+# INTEGRASI RAGService + Database + LCEL Pattern
 # =====================================
 
 class RAGService():
@@ -1084,6 +866,11 @@ class RAGService():
                 api_key=settings.openai_api_key
             )
 
+            # Step 3: Generate response with token tracking
+            input_tokens = 0
+            output_tokens = 0
+            cost_usd = 0.0
+
             rag_chain = (
                 RunnableParallel({
                     "knowledge_base": lambda _: rag_result.get("context", ""),
@@ -1093,26 +880,9 @@ class RAGService():
                 })
                 | self.rag_prompt
                 | chat_openai
-                | self.output_parser
             )
 
-            # Step 3: Generate response with token tracking
-            input_tokens = 0
-            output_tokens = 0
-            cost_usd = 0.0
-
-            chain_without_parser = (
-                RunnableParallel({
-                    "knowledge_base": lambda _: rag_result.get("context", ""),
-                    "user_context": lambda _: user_context_text,
-                    "history": lambda _: history_text,
-                    "question": RunnablePassthrough()
-                })
-                | self.rag_prompt
-                | chat_openai
-            )
-
-            llm_response = await chain_without_parser.ainvoke(question)
+            llm_response = await rag_chain.ainvoke(question)
             response_text = llm_response.content
 
             # Extract token usage from AIMessage usage_metadata
@@ -1131,9 +901,11 @@ class RAGService():
             model_used = settings.openai_model_comprehensive  # Use comprehensive model for RAG
             personalization_tokens = {"input": 0, "output": 0, "cost": 0.0}
 
-            if use_personalization:
+            rag_sources = rag_result.get("sources", [])
+
+            if use_personalization and rag_sources:
                 personalization_result = await self._personalize_response(
-                    response_text, user_context_text, history_text, question
+                    response_text, user_context_text, history_text, question, rag_sources
                 )
                 final_response = personalization_result.get("response", response_text)
                 model_used = personalization_result.get("model_used", model_used)
@@ -1147,12 +919,17 @@ class RAGService():
             # Step 5: Calculate metrics
             latency_ms = (time.time() - start_time) * 1000
 
+            # Determine source_type based on whether knowledge base was used
+            context_used_val = rag_result.get("context_used", False)
+            sources_count = len(rag_result.get("sources", []))
+
+            source_type = "knowledge_base" if context_used_val else "out_of_context"
+
             return {
                 "response": final_response,
                 "model_used": model_used,
                 "response_type": "rag_response",
-                "source_type": "knowledge_base",
-                "knowledge_base_used": bool(rag_result.get("context")),
+                "source_type": source_type,
                 "user_context_used": bool(user_context_text),
                 "history_used": bool(history_text),
                 "source_documents": rag_result.get("sources", []),
@@ -1204,7 +981,8 @@ class RAGService():
         base_response: str,
         user_context: str,
         history: str,
-        original_query: str
+        original_query: str,
+        source_documents: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """Personalize response using personalization model (gpt-4.1-nano)"""
         try:
@@ -1254,7 +1032,8 @@ class RAGService():
             return {
                 "response": personalized_response,
                 "model_used": settings.openai_model_personalized,
-                "tokens": tokens
+                "tokens": tokens,
+                "source_documents": source_documents or []
             }
 
         except Exception as e:
@@ -1262,7 +1041,8 @@ class RAGService():
             return {
                 "response": base_response,  # Fallback
                 "model_used": settings.openai_model_comprehensive,
-                "tokens": {"input": 0, "output": 0, "cost": 0.0}
+                "tokens": {"input": 0, "output": 0, "cost": 0.0},
+                "source_documents": source_documents or []
             }
 
     async def generate_response_stream(
@@ -1312,13 +1092,15 @@ class RAGService():
                     else:
                         full_chunk += chunk
 
-                    # Yield content chunks
+                    # Collect content chunks without yielding to user
                     if hasattr(chunk, 'content') and chunk.content:
                         full_response += chunk.content
-                        yield {
-                            "type": "content",
-                            "data": chunk.content
-                        }
+                        # Only yield to user if personalization is NOT requested
+                        if not use_personalization:
+                            yield {
+                                "type": "content",
+                                "data": chunk.content
+                            }
 
             # Extract and yield token usage metadata
             if full_chunk:
@@ -1332,8 +1114,13 @@ class RAGService():
                 )
                 rag_logger.info(f"RAGService.stream RAG tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
 
-                # Yield RAG metadata
-                yield {
+                # Determine source_type based on whether we have relevant sources
+                rag_sources = rag_result.get("sources", [])
+                source_type = "knowledge_base" if len(rag_sources) > 0 else "out_of_context"
+
+              
+                # Prepare RAG metadata - include general_response for caching when personalization is requested
+                rag_metadata = {
                     "type": "metadata",
                     "data": {
                         "source": "rag",
@@ -1343,24 +1130,55 @@ class RAGService():
                         "total_tokens": input_tokens + output_tokens,
                         "cost_usd": cost_usd,
                         "response_type": "rag_response",
-                        "source_type": "knowledge_base",
-                        "source_documents": rag_result.get("sources", [])
+                        "source_type": source_type,
+                        "source_documents": rag_sources,
+                        # Include general_response for caching when personalization is requested
+                        "general_response": full_response if use_personalization else None
                     }
                 }
 
-            # Step 4: Handle personalization if requested
-            if use_personalization:
+                # Only yield RAG metadata to user if personalization is NOT requested
+                if not use_personalization:
+                    yield rag_metadata
+                else:
+                    # For caching purposes, we need to ensure the metadata is available downstream
+                    # but not yielding to user
+                    pass
+
+            # Step 4: Handle personalization if requested AND we have relevant sources
+            # Skip personalization if no relevant documents found
+            rag_sources = rag_result.get("sources", [])
+
+            if use_personalization and rag_sources:
                 user_context_text, history_text = await self._get_context_components(
                     chatroom_id, user_id, course_id
                 )
 
                 if user_context_text or history_text:
-                    # Use dedicated streaming personalization method with token tracking
+                    # First, yield the RAG metadata with general_response for caching
+                    yield rag_metadata
+
+                    # Then, use dedicated streaming personalization method with token tracking
                     async for item in self._personalize_response_stream(
-                        full_response, user_context_text, history_text, question
+                        full_response, user_context_text, history_text, question, rag_sources
                     ):
                         # Forward content and metadata from personalization
                         yield item
+                else:
+                    # No context, but personalization was requested - yield RAG metadata for caching and display
+                    yield rag_metadata
+            elif use_personalization:
+                # Personalization requested but no relevant sources (out-of-context)
+                # Since personalization can't work without sources, we yield the RAG response
+                # This is NOT a duplicate because personalization won't run
+                yield rag_metadata
+
+                # Yield the RAG response content that was collected but not yielded earlier
+                if full_response:
+                    yield {
+                        "type": "content",
+                        "data": full_response
+                    }
 
         except Exception as e:
             self.rag_logger.error(f"RAGService streaming failed: {e}")
@@ -1374,7 +1192,8 @@ class RAGService():
         base_response: str,
         user_context: str,
         history: str,
-        original_query: str
+        original_query: str,
+        source_documents: Optional[List[Dict[str, Any]]] = None
     ):
         """Streaming version of response personalization using GPT-4.1-nano.
 
@@ -1449,7 +1268,8 @@ class RAGService():
                         "total_tokens": input_tokens + output_tokens,
                         "cost_usd": cost_usd,
                         "response_type": "cache_hit_personalized",
-                        "source_type": "redis_cache"
+                        "source_type": "redis_cache",
+                        "source_documents": source_documents or []
                     }
                 }
 
@@ -1470,7 +1290,8 @@ class RAGService():
                     "total_tokens": 0,
                     "cost_usd": 0.0,
                     "response_type": "cache_hit_personalized",
-                    "source_type": "redis_cache"
+                    "source_type": "redis_cache",
+                    "source_documents": source_documents or []
                 }
             }
 

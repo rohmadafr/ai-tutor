@@ -175,44 +175,39 @@ class ChatroomCRUD(AsyncCRUD):
             }
 
 # Helper function for welcome message
-async def create_welcome_message(chatroom_id: str, user_id: str, course_title: str, user_name: str = None):
+async def create_welcome_message(chatroom_id: str, user_id: str, course_title: str, user_name: str = None, session = None):
     """Create automatic AI response welcome message when chatroom is created (no user message needed)."""
     try:
-        async with async_db.get_session() as session:
-            # Create a dummy system message for the response to link to
-            system_message = Message(
-                message_id=str(uuid.uuid4()),
-                chatroom_id=chatroom_id,
-                user_id=user_id,
-                message_text=None
-            )
-            session.add(system_message)
-            await session.flush()
+        # Use provided session or create new one
+        use_existing_session = session is not None
+        if not use_existing_session:
+            session = await async_db.get_session()
 
-            # Create AI response welcome message
-            welcome_response_text = f"""👋 Halo {user_name or 'Pengguna'}!
+        # Create a dummy system message for the response to link to
+        system_message = Message(
+            message_id=str(uuid.uuid4()),
+            chatroom_id=chatroom_id,
+            user_id=user_id,
+            message_text=None
+        )
+        session.add(system_message)
+        await session.flush()
+
+        # Create AI response welcome message
+        welcome_response_text = f"""👋 Halo {user_name or 'Pengguna'}!
 
 Selamat datang di chatroom untuk course *{course_title}*! 🚀
 
-Saya adalah AI Tutor yang siap membantu kamu:
-- 📚 Menjelaskan materi yang sulit dipahami
-- 💡 Memberikan contoh dan ilustrasi
-- 🎯 Membantu mengerjakan latihan soal
-- ❓ Menjawab pertanyaan seputar course ini
-- 📝 Membuat rangkuman materi
+Saya adalah AI Tutor yang siap membantu kamu. Apa yang ingin kita pelajari hari ini? 😊"""
 
-Jangan ragu bertanya ya! Saya akan berusaha menjawab dengan cara yang mudah kamu pahami.
-
-Apa yang ingin kita pelajari hari ini? 😊"""
-
-            response = Response(
-                response_id=str(uuid.uuid4()),
-                message_id=system_message.message_id,
-                chatroom_id=chatroom_id,
-                user_id=user_id,
-                response_text=welcome_response_text,
-                model_used="system",
-                response_type="cache_hit_raw",
+        response = Response(
+            response_id=str(uuid.uuid4()),
+            message_id=system_message.message_id,
+            chatroom_id=chatroom_id,
+            user_id=user_id,
+            response_text=welcome_response_text,
+            model_used="system",
+            response_type="cache_hit_raw",
                 source_type="redis_cache",
                 cache_hit=False,
                 personalized=False,
@@ -222,11 +217,14 @@ Apa yang ingin kita pelajari hari ini? 😊"""
                 cost_usd=0.0,
                 latency_ms=0.0
             )
-            session.add(response)
+        session.add(response)
+
+        # Only commit if we created the session
+        if not use_existing_session:
             await session.commit()
 
-            api_logger.info(f"✅ Created welcome message for chatroom {chatroom_id}")
-            return message.message_id
+        api_logger.info(f"✅ Created welcome message for chatroom {chatroom_id}")
+        return system_message.message_id
 
     except Exception as e:
         api_logger.error(f"❌ Failed to create welcome message: {e}")
@@ -261,17 +259,54 @@ async def create_chatroom(chatroom_data: ChatroomCreate) -> ChatroomResponse:
             if not course:
                 raise HTTPException(status_code=404, detail=f"Course {chatroom_data.course_id} not found")
 
-        # Multiple chatrooms allowed for same user-course combination
-        # Always create new chatroom regardless of existing ones
-
-        # Create chatroom
-        chatroom_dict = chatroom_data.model_dump()
-        chatroom = await chatroom_crud.create(chatroom_dict)
-
-        api_logger.info(f"✅ Created chatroom {chatroom.chatroom_id}")
-
-        # Create user context and welcome message
+        # Handle multiple chatrooms for same user-course combination
+        # Use single database session to avoid race conditions
         async with async_db.get_session() as session:
+            # Check if user already has active chatroom for this course
+            existing_chatroom = await session.execute(
+                select(Chatroom).where(
+                    and_(
+                        Chatroom.user_id == chatroom_data.user_id,
+                        Chatroom.course_id == chatroom_data.course_id,
+                        Chatroom.is_active == True
+                    )
+                )
+            )
+            existing = existing_chatroom.scalar_one_or_none()
+
+            if existing:
+                # Deactivate existing chatroom
+                existing.is_active = False
+                await session.commit()
+                api_logger.info(f"Deactivated existing chatroom {existing.chatroom_id} for user {chatroom_data.user_id}")
+
+            # Create new chatroom in the same session
+            chatroom_dict = chatroom_data.model_dump()
+
+            # Check if room_name already exists, append timestamp if needed
+            existing_name_result = await session.execute(
+                select(Chatroom.room_name).where(
+                    and_(
+                        Chatroom.user_id == chatroom_data.user_id,
+                        Chatroom.course_id == chatroom_data.course_id,
+                        Chatroom.room_name == chatroom_data.room_name
+                    )
+                )
+            )
+            existing_name = existing_name_result.scalar_one_or_none()
+
+            if existing_name:
+                # Append timestamp to make room_name unique
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                chatroom_dict['room_name'] = f"{chatroom_data.room_name}_{timestamp}"
+
+            chatroom = Chatroom(**chatroom_dict)
+            session.add(chatroom)
+            await session.flush()
+            await session.refresh(chatroom)
+
+            # Create user context and welcome message in the same session
             try:
                 # Create user context for this course if it doesn't exist
                 await UserContext.aget_or_create(
@@ -286,7 +321,7 @@ async def create_chatroom(chatroom_data: ChatroomCreate) -> ChatroomResponse:
                     select(User).where(User.user_id == chatroom_data.user_id)
                 )
                 user = user_result.scalar_one_or_none()
-                user_name = user.username if user else None
+                user_name = user.username if user else "Pengguna"
 
                 course_result = await session.execute(
                     select(Course).where(Course.course_id == chatroom_data.course_id)
@@ -299,10 +334,17 @@ async def create_chatroom(chatroom_data: ChatroomCreate) -> ChatroomResponse:
                     chatroom.chatroom_id,
                     chatroom_data.user_id,
                     course_title,
-                    user_name
+                    user_name,
+                    session
                 )
+
             except Exception as e:
                 api_logger.warning(f"Failed to create user context or welcome message: {e}")
+
+            # Final commit for all operations
+            await session.commit()
+
+        api_logger.info(f"✅ Created chatroom {chatroom.chatroom_id}")
 
         return ChatroomResponse(
             chatroom_id=chatroom.chatroom_id,

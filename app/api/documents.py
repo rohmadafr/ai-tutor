@@ -70,6 +70,61 @@ async def upload_document(
             material_id = FileHasher.get_material_id(Path(temp_file_path))
             api_logger.info(f"Generated material_id: {material_id}")
 
+            # Check if material already exists in Redis (knowledge base)
+            rag_service = await get_rag_service()
+            existing_material_docs = await rag_service.get_documents_by_material_id(material_id, limit=10000)  # Get all chunks
+            total_existing_chunks = len(existing_material_docs)
+
+            if existing_material_docs:
+                api_logger.info(f"📄 Material {material_id} already exists in knowledge base with {total_existing_chunks} chunks, skipping embedding generation")
+
+                # Update database record for this course if needed
+                if course_id:
+                    async with async_db.get_session() as session:
+                        from ..schemas.db_models import CourseKnowledgeBase
+
+                        existing_kb = await session.execute(
+                            select(CourseKnowledgeBase).where(
+                                and_(
+                                    CourseKnowledgeBase.course_id == course_id,
+                                    CourseKnowledgeBase.material_id == material_id
+                                )
+                            )
+                        )
+                        kb_entry = existing_kb.scalar_one_or_none()
+
+                        if not kb_entry:
+                            # Create knowledge base entry for this course
+                            kb_entry = CourseKnowledgeBase(
+                                course_id=course_id,
+                                material_id=material_id,
+                                material_type="document",
+                                file_path=file.filename,
+                                file_size=len(content),
+                                processed=True,
+                                embedding_model=getattr(rag_service, 'embedding_model', 'text-embedding-3-small'),
+                                chunk_count=total_existing_chunks,  # Use actual count from existing docs
+                                access_count=0
+                            )
+                            session.add(kb_entry)
+                            await session.commit()
+                            await session.refresh(kb_entry)
+                            api_logger.info(f"✅ Linked existing material {material_id} to course {course_id} with {total_existing_chunks} chunks")
+
+                # Clean up temporary file
+                Path(temp_file_path).unlink(missing_ok=True)
+
+                return {
+                    "message": f"Document {file.filename} already exists in knowledge base",
+                    "filename": file.filename,
+                    "material_id": material_id,
+                    "course_id": course_id,
+                    "total_chunks": total_existing_chunks,
+                    "file_type": file_extension,
+                    "status": "already_processed",
+                    "action": "linked_to_course" if course_id else "already_exists"
+                }
+
             # Use original filename for storage
             api_logger.info(f"Processing file with original filename: {file.filename}")
 
@@ -219,7 +274,9 @@ async def upload_document(
                 "file_type": file_extension,
                 "preprocessed": True,
                 "total_chars": sum(len(doc["content"]) for doc in documents),
-                "knowledge_base_linked": course_id is not None
+                "knowledge_base_linked": course_id is not None,
+                "status": "newly_processed",
+                "action": "processed_and_stored"
             }
 
         finally:

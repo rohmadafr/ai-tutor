@@ -14,6 +14,8 @@ fields:
     type: text
   - name: page
     type: tag
+  - name: filepath
+    type: text
   - name: vector
     type: vector
     attrs:
