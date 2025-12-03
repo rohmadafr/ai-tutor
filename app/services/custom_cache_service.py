@@ -9,6 +9,7 @@ import redis.asyncio as redis
 from typing import List, Dict, Any
 from redisvl.index import AsyncSearchIndex
 from redisvl.query import VectorQuery
+from redisvl.query.filter import Tag, FilterExpression
 from redisvl.schema import IndexSchema
 from redisvl.utils.vectorize import OpenAITextVectorizer
 
@@ -139,6 +140,7 @@ class CustomCacheService:
     async def search_cache(
         self,
         embedding: List[float],
+        course_id: str = None,
         distance_threshold: float = None, # Use settings.cache_threshold by default
     ):
         """
@@ -154,6 +156,11 @@ class CustomCacheService:
 
         try:
             import json
+
+            filter_expr = Tag("course_id") == "global"
+            if course_id:
+                filter_expr = (Tag("course_id") == course_id) | (Tag("course_id") == "global")
+
             return_fields = ["response", "user_id", "course_id", "prompt", "model", "created_at", "sources"]
             query = VectorQuery(
                 vector=embedding,
@@ -161,6 +168,7 @@ class CustomCacheService:
                 return_fields=return_fields,
                 num_results=1,
                 return_score=True,
+                filter_expression = filter_expr
             )
             results = await self.index.search(query.query, query_params=query.params)
 
@@ -235,7 +243,7 @@ class CustomCacheService:
         """Main query method following the exact reference pattern"""
         start_time = time.time()
         embedding = await self.generate_embedding(prompt)
-        cached_result = await self.search_cache(embedding)
+        cached_result = await self.search_cache(embedding, course_id)
 
         if cached_result:
             # Get cached response

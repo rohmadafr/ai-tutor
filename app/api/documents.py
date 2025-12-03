@@ -568,9 +568,9 @@ async def upload_prompt_templates(file: UploadFile = File(...)) -> Dict[str, Any
                     prompt=prompt,
                     response=response,
                     embedding=embedding,
-                    user_id="all",
-                    model="gpt-4o-mini",
-                    course_id="all",
+                    user_id="system",       # UBAH: Gunakan "system" agar jelas ini bukan user biasa
+                    model="gpt-4o-mini",    # Model standar untuk template
+                    course_id="global",     # PENTING: Ubah "all" menjadi "global"
                     sources=[{
                         "type": "template",
                         "tag": tag,

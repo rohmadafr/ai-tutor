@@ -453,7 +453,6 @@ class UnifiedRAGService:
             filter_expression = None
             if course_id and material_ids:
                 # Filter by both course_id AND material_id (most specific)
-                from redisvl.query.filter import FilterExpression as FE
                 filter_expression = (Tag("course_id") == course_id) & (Tag("material_id") == material_ids[0])
             elif course_id:
                 # Filter by course_id only (get all materials in course)
@@ -492,7 +491,6 @@ class UnifiedRAGService:
                     distance = 1.0
 
                 # RedisVL VectorQuery returns COSINE DISTANCE
-                # Take all results from top_k (no threshold filtering)
                 documents.append({
                     "text": getattr(doc, "text", ""),
                     "material_id": getattr(doc, "material_id", ""),
