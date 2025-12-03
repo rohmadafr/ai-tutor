@@ -5,11 +5,14 @@ Handles document upload, ingestion, search, and deletion operations
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from typing import Dict, Any, Optional
 import tempfile
+import csv
+import io
 from pathlib import Path
 
 from sqlalchemy import select, and_
 
 from ..services.unified_rag_service import UnifiedRAGService
+from ..services.custom_cache_service import CustomCacheService
 from ..utils.pdf_extractor import PDFExtractor
 from ..utils.file_hasher import FileHasher
 from ..utils.text_preprocessing import text_preprocessor
@@ -20,6 +23,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 # Global service instances
 _rag_service: Optional[UnifiedRAGService] = None
+_cache_service: Optional[CustomCacheService] = None
 
 
 async def get_rag_service() -> UnifiedRAGService:
@@ -28,6 +32,15 @@ async def get_rag_service() -> UnifiedRAGService:
     if _rag_service is None:
         _rag_service = UnifiedRAGService()
     return _rag_service
+
+
+async def get_cache_service() -> CustomCacheService:
+    """Get cache service instance"""
+    global _cache_service
+    if _cache_service is None:
+        _cache_service = CustomCacheService()
+        await _cache_service.connect()
+    return _cache_service
 
 
 @router.post("/upload")
@@ -446,3 +459,145 @@ async def delete_material(material_id: str) -> Dict[str, Any]:
     except Exception as e:
         api_logger.error(f"Failed to delete material {material_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+
+
+@router.post("/upload-templates")
+async def upload_prompt_templates(file: UploadFile = File(...)) -> Dict[str, Any]:
+    """
+    Upload CSV template containing prompt-response pairs for greetings, closings, and out-of-topics responses
+
+    Expected CSV format:
+    prompt,response,tag
+    "Halo selamat pagi","Selamat pagi! Ada yang bisa saya bantu?",greeting
+    "Terima kasih","Sama-sama! Senang bisa membantu Anda.",closing
+    "Apakah cuaca?","Maaf, saya tidak memiliki informasi cuaca. Saya AI tutor untuk pembelajaran.",oot
+
+    Args:
+        file: CSV file with prompt-response pairs
+
+    Returns:
+        Processing results and statistics
+    """
+    try:
+        # Validate file extension
+        if not file.filename.lower().endswith('.csv'):
+            raise HTTPException(
+                status_code=400,
+                detail="Only CSV files are allowed"
+            )
+
+        # Read and parse CSV with robust encoding handling
+        content = await file.read()
+
+        # Try different encodings
+        encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
+        csv_content = None
+
+        for encoding in encodings:
+            try:
+                csv_content = content.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if not csv_content:
+            raise HTTPException(
+                status_code=400,
+                detail="Unable to decode CSV file. Please ensure it's saved as UTF-8"
+            )
+
+        # Remove BOM if present and clean up
+        if csv_content.startswith('\ufeff'):
+            csv_content = csv_content[1:]
+
+        # Clean up the content and fix column names
+        csv_content = csv_content.strip()
+
+        csv_reader = csv.DictReader(io.StringIO(csv_content))
+
+        # Validate required columns - be more flexible with column names
+        available_columns = [col.strip().lower() for col in csv_reader.fieldnames] if csv_reader.fieldnames else []
+
+        # Map various possible column names to standard names
+        column_mapping = {}
+        for col in available_columns:
+            if 'prompt' in col.lower() or col.lower() == 'prompt':
+                column_mapping['prompt'] = col
+            elif 'response' in col.lower() or col.lower() == 'response':
+                column_mapping['response'] = col
+            elif 'tag' in col.lower():
+                column_mapping['tag'] = col
+
+        required_mappings = ['prompt', 'response', 'tag']
+        missing_mappings = [mapping for mapping in required_mappings if mapping not in column_mapping]
+
+        if missing_mappings:
+            raise HTTPException(
+                status_code=400,
+                detail=f"CSV must have columns containing: prompt, response, tag. Found columns: {available_columns}"
+            )
+
+        # Get cache service
+        cache_service = await get_cache_service()
+
+        processed_count = 0
+        error_count = 0
+
+        api_logger.info(f"Processing templates from {file.filename}")
+
+        # Process each row
+        for row in csv_reader:
+            try:
+                prompt = row[column_mapping['prompt']].strip()
+                response = row[column_mapping['response']].strip()
+                tag = row[column_mapping['tag']].strip().lower()
+
+                # Skip empty rows
+                if not prompt or not response:
+                    continue
+
+                # Validate tag
+                valid_tags = {'greeting', 'closing', 'oot'}
+                if tag not in valid_tags:
+                    tag = 'oot'
+
+                # Generate embedding and store
+                embedding = await cache_service.generate_embedding(prompt)
+
+                success = await cache_service.store_response(
+                    prompt=prompt,
+                    response=response,
+                    embedding=embedding,
+                    user_id="all",
+                    model="gpt-4o-mini",
+                    course_id="all",
+                    sources=[{
+                        "type": "template",
+                        "tag": tag,
+                        "source_file": file.filename
+                    }]
+                )
+
+                if success:
+                    processed_count += 1
+                else:
+                    error_count += 1
+
+            except Exception:
+                error_count += 1
+
+        api_logger.info(f"Template upload completed: {processed_count} processed, {error_count} errors")
+
+        return {
+            "message": f"Successfully processed {processed_count} templates",
+            "filename": file.filename,
+            "processed_count": processed_count,
+            "error_count": error_count,
+            "total_rows": processed_count + error_count
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        api_logger.error(f"Failed to upload templates: {e}")
+        raise HTTPException(status_code=500, detail=f"Template upload failed: {str(e)}")

@@ -5,7 +5,7 @@ No duplicate logic - each service handles its own responsibilities
 """
 import time
 import datetime
-from typing import Dict, Any, Optional, AsyncGenerator
+from typing import Dict, Any, Optional
 from .unified_rag_service import UnifiedRAGService, rag_service
 from .custom_cache_service import CustomCacheService
 from ..core.logger import chat_logger
