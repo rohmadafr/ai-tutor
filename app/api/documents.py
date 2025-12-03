@@ -5,14 +5,11 @@ Handles document upload, ingestion, search, and deletion operations
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from typing import Dict, Any, Optional
 import tempfile
-import csv
-import io
 from pathlib import Path
 
 from sqlalchemy import select, and_
 
 from ..services.unified_rag_service import UnifiedRAGService
-from ..services.custom_cache_service import CustomCacheService
 from ..utils.pdf_extractor import PDFExtractor
 from ..utils.file_hasher import FileHasher
 from ..utils.text_preprocessing import text_preprocessor
@@ -23,7 +20,6 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 # Global service instances
 _rag_service: Optional[UnifiedRAGService] = None
-_cache_service: Optional[CustomCacheService] = None
 
 
 async def get_rag_service() -> UnifiedRAGService:
@@ -32,15 +28,6 @@ async def get_rag_service() -> UnifiedRAGService:
     if _rag_service is None:
         _rag_service = UnifiedRAGService()
     return _rag_service
-
-
-async def get_cache_service() -> CustomCacheService:
-    """Get cache service instance"""
-    global _cache_service
-    if _cache_service is None:
-        _cache_service = CustomCacheService()
-        await _cache_service.connect()
-    return _cache_service
 
 
 @router.post("/upload")
@@ -459,6 +446,7 @@ async def delete_material(material_id: str) -> Dict[str, Any]:
     except Exception as e:
         api_logger.error(f"Failed to delete material {material_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+<<<<<<< HEAD
 
 
 @router.post("/upload-templates")
@@ -601,3 +589,5 @@ async def upload_prompt_templates(file: UploadFile = File(...)) -> Dict[str, Any
     except Exception as e:
         api_logger.error(f"Failed to upload templates: {e}")
         raise HTTPException(status_code=500, detail=f"Template upload failed: {str(e)}")
+=======
+>>>>>>> parent of 964f69a (Fix max tokens and add template)

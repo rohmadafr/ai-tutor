@@ -861,7 +861,6 @@ class RAGService():
             chat_openai = ChatOpenAI(
                 model=settings.openai_model_comprehensive,
                 temperature=settings.openai_temperature,
-                max_tokens=settings.openai_max_tokens,
                 api_key=settings.openai_api_key
             )
 
@@ -990,7 +989,6 @@ class RAGService():
             personalization_llm = ChatOpenAI(
                 model=settings.openai_model_personalized,
                 temperature=settings.openai_temperature,
-                max_tokens=settings.openai_max_tokens,
                 streaming=False,
                 openai_api_key=settings.openai_api_key
             )
@@ -1067,7 +1065,6 @@ class RAGService():
             chat_openai = ChatOpenAI(
                 model=settings.openai_model_comprehensive,
                 temperature=settings.openai_temperature,
-                max_tokens=settings.openai_max_tokens,
                 api_key=settings.openai_api_key,
                 streaming=True,
                 stream_usage=True  # Enable usage metadata in streaming
@@ -1206,7 +1203,6 @@ class RAGService():
             personalization_llm = ChatOpenAI(
                 model=settings.openai_model_personalized,
                 temperature=settings.openai_temperature,
-                max_tokens=settings.openai_max_tokens,
                 streaming=True,
                 openai_api_key=settings.openai_api_key
             )
