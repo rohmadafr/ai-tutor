@@ -170,10 +170,12 @@ class SimpleChatService:
         try:
             # Step 1: Check cache using custom_cache_service (non-streaming) - measure time
             cache_query_start_time = time.time()
+            chat_logger.info(f"🔍 [CHAT DEBUG] Starting query: '{query}' | User: {user_id} | Course: {course_id} | Personalization: {use_personalization}")
             cached_result = await self.cache_service.query(query, user_id, course_id)
             cache_query_time_ms = (time.time() - cache_query_start_time) * 1000
 
             if cached_result is not None and cached_result.get("cache_status") != "miss":
+                chat_logger.info(f"🔍 [CHAT DEBUG] Cache HIT! Found {len(cached_result.get('sources', []))} cached sources")
                 # Cache hit scenario
                 chat_logger.info(f"Cache HIT for user={user_id}, course={course_id}")
 
@@ -337,7 +339,12 @@ class SimpleChatService:
                 return
 
             # Cache miss scenario - use RAG streaming
-            chat_logger.info(f"Cache MISS for user={user_id}, course={course_id} - Using RAG streaming")
+            chat_logger.info(f"🔍 [CHAT DEBUG] Cache MISS! Proceeding to RAG for course={course_id}")
+
+            # Extract embedding from cache miss result for reuse
+            cached_embedding = cached_result.get("embedding") if cached_result else None
+            if cached_embedding:
+                chat_logger.info(f"🔄 [EMBEDDING REUSE] Using cached embedding to avoid duplicate generation")
 
             # Stream response from RAG service (includes personalization if requested) + timing
             rag_start_time = time.time()
@@ -350,7 +357,8 @@ class SimpleChatService:
                 course_id=course_id,
                 chatroom_id=chatroom_id,
                 user_id=user_id,
-                use_personalization=use_personalization
+                use_personalization=use_personalization,
+                cached_embedding=cached_embedding  # 🔥 PASS CACHED EMBEDDING
             ):
                 if item["type"] == "content":
                     # Yield content chunks for streaming
@@ -654,7 +662,11 @@ class SimpleChatService:
             # Step 2: Store general response in cache for future use
             if general_response.strip():
                 try:
-                    embedding = await self.cache_service.generate_embedding(query)
+                    # Get embedding from cache miss result to avoid duplicate generation
+                    embedding = cached_result.get("embedding") if cached_result else None
+                    if not embedding:
+                        # Fallback: generate embedding only if not available from cache miss
+                        embedding = await self.cache_service.generate_embedding(query)
                     # Extract sources from RAG response for cache storage
                     source_documents = rag_response.get("source_documents", [])
 

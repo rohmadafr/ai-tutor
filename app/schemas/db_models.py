@@ -1016,10 +1016,10 @@ class Response(Base):
 
     # Response type and source
     response_type = Column(
-        Enum("cache_hit_raw", "cache_hit_personalized", "rag_response", "error", name="response_type"),
+        Enum("cache_hit_raw", "cache_hit_personalized", "rag_response", "error", "out_of_topic", name="response_type"),
         nullable=False
     )
-    source_type = Column(Enum("redis_cache", "knowledge_base", "out_of_context", name="source_type"), nullable=False)
+    source_type = Column(Enum("redis_cache", "knowledge_base", "out_of_topic", name="source_type"), nullable=False)
 
     # Cache information
     cache_hit = Column(Boolean, default=False, server_default=text("false"))

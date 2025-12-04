@@ -446,7 +446,6 @@ async def delete_material(material_id: str) -> Dict[str, Any]:
     except Exception as e:
         api_logger.error(f"Failed to delete material {material_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
-<<<<<<< HEAD
 
 
 @router.post("/upload-templates")
@@ -589,5 +588,3 @@ async def upload_prompt_templates(file: UploadFile = File(...)) -> Dict[str, Any
     except Exception as e:
         api_logger.error(f"Failed to upload templates: {e}")
         raise HTTPException(status_code=500, detail=f"Template upload failed: {str(e)}")
-=======
->>>>>>> parent of 964f69a (Fix max tokens and add template)

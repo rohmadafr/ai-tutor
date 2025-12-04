@@ -5,13 +5,13 @@ Based on efficient batch processing pattern from ai-services
 """
 import os
 import time
+import random
 from typing import List, Dict, Any, Optional
 import numpy as np
 import redis.asyncio as redis
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
 
 # RedisVL imports
@@ -29,6 +29,72 @@ from ..core.logger import rag_logger
 from ..core.exceptions import RedisException
 from ..core.telemetry import TokenCounter
 from ..utils.batch_processor import batch_processor
+
+
+def generate_out_of_topic_response() -> str:
+    """
+    Generate random out-of-topic response from 40 variations
+    Returns a natural response when no relevant context is found
+    """
+    responses = [
+        # Formal & Professional
+        "Maaf, saya tidak memiliki informasi yang cukup untuk menjawab pertanyaan ini dalam konteks course ini.",
+        "Mohon maaf, topik yang Anda tanyakan tidak termasuk dalam materi yang tersedia untuk course ini.",
+        "Saya tidak dapat memberikan jawaban yang relevan karena pertanyaan Anda di luar scope materi course ini.",
+        "Maaf, informasi yang Anda cari tidak tersedia dalam knowledge base course ini.",
+        "Sayang sekali, saya tidak memiliki informasi pengetahuan yang cukup untuk menjelaskan topik tersebut dalam course ini.",
+
+        # Helpful & Guiding
+        "Pertanyaan menarik! Namun, topik ini tidak tercakup dalam materi course ini. Ada yang lain bisa saya bantu?",
+        "Saya mengerti Anda ingin tahu tentang hal itu, tapi materi ini tidak ada dalam course ini. Mungkin coba pertanyaan lain?",
+        "Topik yang Anda tanyakan berada di luar range materi course ini. Apakah ada pertanyaan terkait materi yang bisa saya bantu?",
+        "Maaf, saya belum bisa menjawab pertanyaan ini. Coba tanyakan tentang materi yang ada dalam course ini ya!",
+        "Saya belum memiliki informasi cukup untuk topik tersebut. Mari kita fokus pada materi course ini yang tersedia.",
+
+        # Friendly & Casual
+        "Wah, pertanyaan ini di luar materi course saya. Mungkin kita bahas materi yang ada saja ya?",
+        "Hmm, topik ini nggak ada di knowledge base course ini. Ada pertanyaan lain yang lebih relevan?",
+        "Maaf ya, saya belum bisa jawab ini. Topiknya di luar materi course yang tersedia.",
+        "Oh, ternyata pertanyaannya di luar scope! Coba tanyakan yang masih berhubungan dengan course ini deh.",
+        "Sayang sekali topik ini tidak tersedia. Yuk, cari tahu tentang materi yang ada di course ini!",
+
+        # Educational & Explanatory
+        "Berdasarkan knowledge base course ini, topik tersebut tidak tercakup dalam materi pembelajaran.",
+        "Dalam konteks course ini, saya tidak menemukan informasi relevan tentang topik yang Anda tanyakan.",
+        "Sistem saya tidak memiliki data yang cukup untuk menjawab pertanyaan tersebut dalam scope course ini.",
+        "Informasi yang Anda minta tidak tersedia dalam database materi course ini.",
+        "Berdasarkan analisis knowledge base, pertanyaan Anda tidak memiliki relevansi dengan materi course.",
+
+        # Apologetic & Respectful
+        "Mohon maaf atas ketidaknyamanannya, namun saya tidak dapat menjawab pertanyaan ini dalam course ini.",
+        "Saya memohon maaf, topik tersebut tidak termasuk dalam area keahlian saya untuk course ini.",
+        "Maaf sekali, saya tidak memiliki kapabilitas untuk menjawab pertanyaan di luar materi course.",
+        "Dengan hormat, saya harus menyatakan bahwa topik ini tidak tersedia dalam knowledge base.",
+        "Mohon pengertiannya, saya tidak bisa memberikan jawaban yang relevan untuk pertanyaan ini."
+
+        # Encouraging Alternative
+        "Mohon maaf, meskipuns saya tidak bisa jawab pertanyaan ini, banyak materi menarik lain dalam course yang bisa kita bahas!",
+        "Mari kita eksplorasi materi lain yang tersedia dalam course ini. Ada yang tertarik?",
+        "Saya sarankan untuk coba pertanyaan lain yang lebih sesuai dengan materi course ini.",
+        "Banyak topik menarik dalam course ini yang bisa kita pelajari bersama!. Ada yang bisa dibantu lagi?",
+        "Ayo kita bahas materi yang tersedia dalam course ini. Topik apa yang ingin Anda ketahui?",
+
+        # Context-specific
+        "Dalam scope course sekarang, topik ini tidak tercakup dalam materi.",
+        "Untuk course ini, saya tidak menemukan materi yang relevan dengan pertanyaan Anda.",
+        "Knowledge base course ini tidak mencakup topik yang Anda tanyakan saat ini.",
+        "Materi course ini berfokus pada topik lain di luar pertanyaan Anda.",
+        "Saya dirancang untuk menjawab pertanyaan terkait materi course ini spesifik.",
+
+        # Future-oriented
+        "Mungkin topik ini akan tersedia di course mendatang, tapi belum ada saat ini. Ada pertanyaan lain?",
+        "Sedang dalam pengembangan materi, tapi topik ini belum tersedia untuk saat ini.",
+        "Saya terus belajar, tapi topik ini belum masuk dalam knowledge base saya.",
+        "Update knowledge base diperlukan untuk bisa menjawab pertanyaan seperti ini.",
+        "Saya akan mencatat ini untuk pengembangan materi course di masa depan."
+    ]
+
+    return random.choice(responses)
 
 
 class UnifiedRAGService:
@@ -154,7 +220,7 @@ class UnifiedRAGService:
                 # Filterable metadata (Tag)
                 {"name": "material_id", "type": "tag"},
                 {"name": "course_id", "type": "tag"},
-                {"name": "page", "type": "tag"},
+                {"name": "page", "type": "numeric"},
 
                 # Content (Text)
                 {"name": "text", "type": "text"},
@@ -330,6 +396,12 @@ class UnifiedRAGService:
             # Search for similar documents using integrated method
             results = await self._search_knowledge_base(query_embedding, course_id, top_k=5)
 
+            # 🔍 DEBUG: Log ALL retrieved results before filtering
+            rag_logger.info(f"🔍 [DEBUG] Query: '{question}' | Course ID: '{course_id}'")
+            rag_logger.info(f"🔍 [DEBUG] Retrieved {len(results)} raw documents from vector DB:")
+            for i, result in enumerate(results):
+                rag_logger.info(f"   Result {i+1}: course_id='{result.get('course_id', 'NONE')}' | material_id='{result.get('material_id', 'NONE')}' | score={result.get('score', 0.0):.4f} | filename='{result.get('filename', 'UNKNOWN')}' | snippet='{result.get('text', '')[:100]}...'")
+
             # Filter relevant documents based on distance threshold
             relevant_docs = []
             sources = []
@@ -394,8 +466,9 @@ class UnifiedRAGService:
 
                 rag_logger.info(f"UnifiedRAGService.query tokens: input={input_tokens}, output={output_tokens}, cost=${cost_usd:.6f}")
             else:
-                # No context found
-                answer = "Saya tidak memiliki informasi yang cukup untuk menjawab pertanyaan ini."
+                # No context found - use dynamic out-of-topic response
+                answer = generate_out_of_topic_response()
+                rag_logger.info(f"🚫 Out-of-topic: Generated dynamic response for query without context")
 
             # context_used should be True only if we have relevant sources (below threshold)
             context_used = len(sources) > 0
@@ -422,21 +495,6 @@ class UnifiedRAGService:
                 "context_used": False
             }
 
-    async def search_similar(self, query: str, course_id: Optional[str] = None, k: int = 5) -> List[Dict[str, Any]]:
-        """Search for similar documents (integrated vector store)"""
-        try:
-            await self._ensure_connection()
-
-            # Generate query embedding
-            query_embedding = await self.embeddings.aembed_query(query)
-
-            # Search documents using integrated method
-            return await self._search_knowledge_base(query_embedding, course_id, top_k=k)
-
-        except Exception as e:
-            rag_logger.error(f"Similar search failed: {e}")
-            return []
-
     async def _search_knowledge_base(
         self,
         query_vector: List[float],
@@ -449,8 +507,11 @@ class UnifiedRAGService:
         (Integrated method - no external vector store dependency)
         """
         try:
+            await self._ensure_connection()
+
             # Build filter expression for course-based and material-based filtering
             filter_expression = None
+
             if course_id and material_ids:
                 # Filter by both course_id AND material_id (most specific)
                 filter_expression = (Tag("course_id") == course_id) & (Tag("material_id") == material_ids[0])
@@ -460,6 +521,8 @@ class UnifiedRAGService:
             elif material_ids:
                 # Fallback to material_id filtering only
                 filter_expression = Tag("material_id") == material_ids[0]
+            else:
+                rag_logger.warning(f"🔍 [FILTER DEBUG] NO FILTER APPLIED! This could cause cross-contamination!")
 
             # Create VectorQuery following RedisVL best practices
             vector_query = VectorQuery(
@@ -467,15 +530,9 @@ class UnifiedRAGService:
                 vector_field_name="vector",
                 return_fields=["text", "material_id", "course_id", "filename", "filepath", "page"],
                 num_results=top_k,
+                filter_expression=filter_expression,
                 return_score=True
             )
-
-            # Apply filter expression if we have one (course-based or file-based)
-            if filter_expression:
-                vector_query.filter_expression = filter_expression
-            elif material_ids:
-                # Fallback to legacy file hash filtering
-                vector_query.filter_expression = self._build_filter_expression(material_ids)
 
             # Execute search
             result = await self.index.search(vector_query.query, query_params=vector_query.params)
@@ -507,24 +564,6 @@ class UnifiedRAGService:
         except Exception as e:
             rag_logger.error("Failed to search knowledge base: %s", str(e))
             return []
-
-    def _build_filter_expression(self, material_ids: List[str]) -> Optional[FilterExpression]:
-        """
-        Build filter OR expression for multiple material IDs using RedisVL Filter API
-        (Tag("material_id") == "materi_A") | (Tag("material_id") == "materi_B")
-        """
-        if not material_ids:
-            return None
-
-        # Create individual filters and combine with OR
-        filters = [Tag("material_id") == h for h in material_ids]
-
-        # Combine filters with OR operator
-        filter_expr = filters[0]
-        for f in filters[1:]:
-            filter_expr = filter_expr | f
-
-        return filter_expr
 
     async def get_stats(self) -> Dict[str, Any]:
         """Get knowledge base statistics"""
@@ -807,34 +846,35 @@ class RAGService():
 
         Pertanyaan: {question}
 
-        Jawab pertanyaan berdasarkan knowledge base yang diberikan. Jika knowledge base tidak mengandung
-        informasi yang cukup untuk menjawab pertanyaan, katakan "Saya tidak memiliki informasi
-        yang cukup untuk menjawab pertanyaan ini."
-
+        Jawab pertanyaan berdasarkan knowledge base yang diberikan.
         Jawab dalam bahasa yang sama dengan pertanyaan.
         """)
 
         # Personalization prompt template
         self.personalization_prompt = ChatPromptTemplate.from_template("""
-        Anda adalah personalization assistant. Response berikut telah dihasilkan untuk user query.
+        Anda adalah AI assistant yang sedang mempersonalisasi response untuk user dengan konteks spesifik.
 
-        Query Original: {original_query}
-        Response yang Ada: {base_response}
+        Task: Personalisasikan base response berikut sesuai user context dan conversation history.
 
-        User Context:
+        Query Original User: {original_query}
+
+        Base Response yang Akan Dipersonalisasi:
+        {base_response}
+
+        User Context (Preferensi & Learning Style):
         {user_context}
 
-        Conversation History:
+        Recent Conversation History:
         {history}
 
-        Personalisasi response tersebut sesuai dengan user context dan conversation history.
-        Pertahankan esensi informasi yang sama, tapi sesuaikan dengan preferensi user.
+        Petunjuk Personalisasi:
+        1. Pertahankan esensi informasi yang sama dari base response
+        2. Tambahkan contoh atau analogi yang relevan dengan konteks user
+        3. Gunakan format yang mudah dipahami sesuai learning style
+        4. Jika history menunjukkan preferensi tertentu, ikuti pola tersebut
 
-        Response Personalisasi:
+        Response Terpersonalisasi:
         """)
-
-        # Output parser
-        self.output_parser = StrOutputParser()
 
     async def generate_response(
         self,
@@ -861,6 +901,7 @@ class RAGService():
             chat_openai = ChatOpenAI(
                 model=settings.openai_model_comprehensive,
                 temperature=settings.openai_temperature,
+                max_tokens=settings.openai_max_tokens,
                 api_key=settings.openai_api_key
             )
 
@@ -950,6 +991,83 @@ class RAGService():
         """Get knowledge base context using existing RAG service"""
         return await self.rag_service.query(question, course_id)
 
+    async def _get_knowledge_base_context_with_embedding(
+        self,
+        question: str,
+        course_id: Optional[str] = None,
+        embedding: List[float] = None
+    ) -> Dict[str, Any]:
+        """Get knowledge base context using existing embedding (no new embedding generation)"""
+        if embedding is None:
+            # Fallback to original method
+            return await self.rag_service.query(question, course_id)
+
+        try:
+            rag_logger.info(f"🔄 [EMBEDDING REUSE] Using cached embedding for knowledge base search")
+
+            # Direct knowledge base search with existing embedding
+            # Use self directly (RAGService extends UnifiedRAGService functionality)
+            results = await self.rag_service._search_knowledge_base(embedding, course_id, top_k=5)
+
+            # Process results (same logic as UnifiedRAGService.query but WITHOUT LLM call)
+            relevant_docs = []
+            sources = []
+
+            for i, result in enumerate(results):
+                content = result.get("text", "")
+                if not content.strip():
+                    continue
+
+                vector_distance = 1.0 - result.get("score", 0.0)
+
+                doc = Document(
+                    page_content=content,
+                    metadata={
+                        "material_id": result.get("material_id", ""),
+                        "course_id": result.get("course_id", ""),
+                        "filename": result.get("filename", ""),
+                        "page": result.get("page", ""),
+                        "filepath": result.get("filepath", ""),
+                        "score": result.get("score", 0.0),
+                        "vector_distance": vector_distance
+                    }
+                )
+                relevant_docs.append(doc)
+
+                # Include in sources if below threshold
+                if vector_distance < settings.rag_distance_threshold:
+                    sources.append({
+                        "content": content,
+                        "metadata": doc.metadata
+                    })
+
+            # Build context
+            context_result = build_context(sources, relevant_docs)
+            context = context_result["context"]
+
+            # Determine if context was used
+            context_used = len(sources) > 0
+
+            rag_logger.info(f"🔄 [EMBEDDING REUSE] Found {len(relevant_docs)} documents, {len(sources)} relevant sources, context_used={context_used}")
+
+            return {
+                "answer": "",  # No LLM answer - we just need context and sources
+                "context": context,
+                "sources": sources,
+                "course_id": course_id,
+                "context_used": context_used,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cost_usd": 0.0,
+                "embedding_reused": True
+            }
+
+        except Exception as e:
+            rag_logger.error(f"❌ Failed to get knowledge base context with embedding: {e}")
+            # Fallback to original method
+            return await self.rag_service.query(question, course_id)
+
     async def _get_context_components(
         self,
         chatroom_id: str,
@@ -969,7 +1087,7 @@ class RAGService():
             history_text = ""
 
             if chatroom:
-                history_text = await chatroom.get_conversation_history(db, limit=5)
+                history_text = await chatroom.get_conversation_history(db, limit=3)
 
             return user_context_text, history_text
 
@@ -989,9 +1107,17 @@ class RAGService():
             personalization_llm = ChatOpenAI(
                 model=settings.openai_model_personalized,
                 temperature=settings.openai_temperature,
+                max_tokens=settings.openai_max_tokens,
                 streaming=False,
                 openai_api_key=settings.openai_api_key
             )
+
+            # DEBUG: Log personalization inputs (non-streaming)
+            rag_logger.info(f"🔍 [PERSONALIZATION DEBUG - NON-STREAMING] Starting personalization:")
+            rag_logger.info(f"   base_response: '{base_response[:100] if base_response else 'NONE'}...' (length: {len(base_response) if base_response else 0})")
+            rag_logger.info(f"   original_query: '{original_query}'")
+            rag_logger.info(f"   user_context: '{user_context[:100] if user_context else 'NONE'}...' (length: {len(user_context) if user_context else 0})")
+            rag_logger.info(f"   history: '{history[:100] if history else 'NONE'}...' (length: {len(history) if history else 0})")
 
             # Build personalization streaming chain
             personalization_chain = (
@@ -1049,7 +1175,8 @@ class RAGService():
         course_id: Optional[str] = None,
         chatroom_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        use_personalization: bool = False
+        use_personalization: bool = False,
+        cached_embedding: Optional[List[float]] = None  # Reuse embedding from cache miss
     ):
         """
         Streaming version of generate_response with consistent parameters.
@@ -1058,13 +1185,48 @@ class RAGService():
         """
         try:
             # Step 1: Get context components
-            rag_result = await self._get_knowledge_base_context(question, course_id)
+            # Use cached embedding if available to avoid duplicate embedding generation
+            if cached_embedding:
+                rag_logger.info(f"🔄 [EMBEDDING REUSE] Using cached embedding for RAG processing")
+                rag_result = await self._get_knowledge_base_context_with_embedding(question, course_id, cached_embedding)
+            else:
+                rag_result = await self._get_knowledge_base_context(question, course_id)
+
+            # Check if out-of-topic (no relevant context found)
+            if not rag_result.get("context_used", False):
+                # Generate dynamic out-of-topic response without LLM call
+                out_of_topic_response = generate_out_of_topic_response()
+                rag_logger.info(f"🚫 Out-of-topic: Generated dynamic response without LLM call")
+
+                # Yield metadata for consistency with streaming format
+                yield {
+                    "type": "metadata",
+                    "data": {
+                        "source": "out_of_topic",
+                        "response_type": "out_of_topic",
+                        "model_used": "none",
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": 0,
+                        "cost_usd": 0.0,
+                        "context_used": False,
+                        "out_of_topic": True
+                    }
+                }
+
+                # Yield the out-of-topic response as content
+                yield {
+                    "type": "content",
+                    "data": out_of_topic_response
+                }
+                return
 
             # Step 2: Build RAG streaming chain with LangChain ChatOpenAI (stream_usage=True)
             from langchain_openai import ChatOpenAI
             chat_openai = ChatOpenAI(
                 model=settings.openai_model_comprehensive,
                 temperature=settings.openai_temperature,
+                max_tokens=settings.openai_max_tokens,
                 api_key=settings.openai_api_key,
                 streaming=True,
                 stream_usage=True  # Enable usage metadata in streaming
@@ -1114,8 +1276,7 @@ class RAGService():
 
                 # Determine source_type based on whether we have relevant sources
                 rag_sources = rag_result.get("sources", [])
-                source_type = "knowledge_base" if len(rag_sources) > 0 else "out_of_context"
-
+                source_type = "knowledge_base" if len(rag_sources) > 0 else "out_of_topics"
               
                 # Prepare RAG metadata - include general_response for caching when personalization is requested
                 rag_metadata = {
@@ -1144,7 +1305,6 @@ class RAGService():
                     pass
 
             # Step 4: Handle personalization if requested AND we have relevant sources
-            # Skip personalization if no relevant documents found
             rag_sources = rag_result.get("sources", [])
 
             if use_personalization and rag_sources:
@@ -1168,7 +1328,6 @@ class RAGService():
             elif use_personalization:
                 # Personalization requested but no relevant sources (out-of-context)
                 # Since personalization can't work without sources, we yield the RAG response
-                # This is NOT a duplicate because personalization won't run
                 yield rag_metadata
 
                 # Yield the RAG response content that was collected but not yielded earlier
@@ -1203,9 +1362,17 @@ class RAGService():
             personalization_llm = ChatOpenAI(
                 model=settings.openai_model_personalized,
                 temperature=settings.openai_temperature,
+                max_tokens=settings.openai_max_tokens,
                 streaming=True,
                 openai_api_key=settings.openai_api_key
             )
+
+            # DEBUG: Log personalization inputs
+            rag_logger.info(f"🔍 [PERSONALIZATION DEBUG] Starting personalization:")
+            rag_logger.info(f"   base_response: '{base_response[:100] if base_response else 'NONE'}...' (length: {len(base_response) if base_response else 0})")
+            rag_logger.info(f"   original_query: '{original_query}'")
+            rag_logger.info(f"   user_context: '{user_context[:100] if user_context else 'NONE'}...' (length: {len(user_context) if user_context else 0})")
+            rag_logger.info(f"   history: '{history[:100] if history else 'NONE'}...' (length: {len(history) if history else 0})")
 
             # Build personalization chain without output parser to get AIMessage
             personalization_chain = (

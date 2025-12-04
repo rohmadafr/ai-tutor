@@ -172,6 +172,9 @@ class CustomCacheService:
             )
             results = await self.index.search(query.query, query_params=query.params)
 
+            # DEBUG: Filter expression info
+            cache_logger.info(f"🔍 [CACHE DEBUG] Course ID: '{course_id}' | Filter: {filter_expr}")
+
             if results and len(results.docs) > 0:
                 first = results.docs[0]
                 # Use 'vector_distance' which is the standard score field in redisvl
@@ -256,7 +259,9 @@ class CustomCacheService:
                 "latency_ms": int((time.time() - start_time) * 1000),
                 "input_tokens": 0,
                 "output_tokens": 0,
-                "sources": cached_result.get("sources", [])
+                "sources": cached_result.get("sources", []),
+                "embedding": embedding,
+                "cache_status": "hit"
             }
 
             # Log cache hit

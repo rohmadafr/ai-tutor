@@ -4,17 +4,18 @@ Initialize database with sample data for all tables
 """
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, text
+from sqlalchemy.ext.asyncio import create_async_engine
 from typing import Dict, Any, List
-import uuid
-import datetime
 
 from ..core.database import async_db
+from ..config.settings import settings
 from ..schemas.db_models import (
     User, Course, Document, Content, Summary, RequestTracking, ApiLog,
     QuestionGeneration, AnswerKey, QuestionOption, GeneratedQuestion,
     Chatroom, Message, Response, UserContext, CourseKnowledgeBase
 )
+from ..schemas.db_models import Base  # Import Base for schema creation
 from ..core.logger import api_logger
 
 router = APIRouter(prefix="/seed", tags=["database-seeder"])
@@ -375,6 +376,101 @@ class DatabaseSeeder:
                 "summary": {}
             }
 
+    async def recreate_schema_and_seed(self) -> Dict[str, Any]:
+        """
+        Recreate database schema from db_models.py and seed all data.
+
+        WARNING: This will DROP ALL EXISTING DATA and recreate from scratch!
+        Only use in development environment.
+        """
+        try:
+            api_logger.info("🔄 Starting database schema recreation...")
+
+            # Step 1: Drop all tables
+            await self._drop_all_tables()
+
+            # Step 2: Create schema from models
+            await self._create_schema_from_models()
+
+            # Step 3: Seed all data
+            result = await self.seed_all()
+
+            api_logger.info("✅ Database schema recreation completed successfully!")
+
+            return {
+                "success": True,
+                "message": "Database schema recreated and seeded successfully",
+                "schema_version": "latest",
+                "seeding_result": result
+            }
+
+        except Exception as e:
+            api_logger.error(f"❌ Database schema recreation failed: {e}")
+            return {
+                "success": False,
+                "message": f"Database schema recreation failed: {str(e)}",
+                "error": str(e)
+            }
+
+    async def _drop_all_tables(self):
+        """Drop all database tables"""
+        async with async_db.get_session() as session:
+            try:
+                # Drop all tables with cascade to handle dependencies
+                await session.execute(text("DROP SCHEMA public CASCADE;"))
+                await session.execute(text("CREATE SCHEMA public;"))
+                await session.commit()
+                api_logger.info("🗑️  All tables dropped successfully")
+
+            except Exception as e:
+                await session.rollback()
+                api_logger.error(f"❌ Failed to drop tables: {e}")
+                raise e
+
+    async def _create_schema_from_models(self):
+        """Create database schema from db_models.py"""
+        try:
+            # Build connection string using same method as async_db
+            database_url = self._build_connection_string()
+
+            # Create async engine
+            engine = create_async_engine(database_url, echo=False)
+
+            # Create all tables from models
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            await engine.dispose()
+            api_logger.info("🏗️  Database schema created from models")
+
+        except Exception as e:
+            api_logger.error(f"❌ Failed to create schema from models: {e}")
+            raise e
+
+    def _build_connection_string(self) -> str:
+        """Build PostgreSQL connection string from settings."""
+        try:
+            postgres_config = {
+                "user": settings.postgres_user,
+                "password": settings.postgres_password,
+                "host": settings.postgres_host,
+                "port": settings.postgres_port,
+                "database": settings.postgres_db
+            }
+
+            # Build connection string for asyncpg + SQLAlchemy
+            connection_string = (
+                f"postgresql+asyncpg://{postgres_config['user']}:"
+                f"{postgres_config['password']}@{postgres_config['host']}:"
+                f"{postgres_config['port']}/{postgres_config['database']}"
+            )
+
+            return connection_string
+
+        except Exception as e:
+            api_logger.error(f"❌ Failed to build database connection string: {e}")
+            raise e
+
 # Initialize seeder
 seeder = DatabaseSeeder()
 
@@ -404,11 +500,32 @@ async def seed_courses_only() -> Dict[str, Any]:
         "count": len(courses)
     }
 
+@router.post("/recreate-and-seed", status_code=201)
+async def recreate_database_schema_and_seed() -> Dict[str, Any]:
+    """
+    Recreate database schema from db_models.py and seed all data.
+
+    ⚠️  WARNING: This will DELETE ALL EXISTING DATA!
+    Only use in development environment!
+    """
+    api_logger.warning("🚨 DANGER ZONE: Starting database recreation - ALL DATA WILL BE DELETED!")
+
+    # Simple safety check - disable in production-like environments
+    # You can add environment variable ENV=production to disable this endpoint
+    if settings.postgres_host in ["prod-db", "production-db", "10.101.20.220"]:
+        api_logger.error("🚫 Database recreation blocked - production-like environment detected!")
+        raise HTTPException(
+            status_code=403,
+            detail="Database recreation is not allowed in production environment"
+        )
+
+    return await seeder.recreate_schema_and_seed()
+
 @router.get("/status")
 async def get_seeding_status() -> Dict[str, Any]:
     """Get current database seeding status."""
     try:
-        async with async_db.get_session() as session:
+        async with async_db() as session:
             # Count records in each table
             tables = {
                 "users": len((await session.execute(select(User.user_id))).scalars().all()),
